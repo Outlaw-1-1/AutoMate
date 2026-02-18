@@ -526,6 +526,7 @@ impl AutoMateApp {
             ui.add(egui::DragValue::new(&mut self.project.settings.estimator_rate).speed(1.0));
         });
         ui.label(RichText::new(format!("Estimated Cost: ${budget:.2}")));
+        ui.label(RichText::new(format!("Estimated Cost: ${budget:,.2}")));
     }
 
     fn drawings_overlay_view(&mut self, ui: &mut Ui) {
@@ -567,6 +568,12 @@ impl AutoMateApp {
             Color32::from_rgba_unmultiplied(255, 255, 255, 20),
         );
         painter.rect_stroke(resp.rect, 8.0, egui::Stroke::new(1.0, self.accent()));
+        painter.rect_stroke(
+            resp.rect,
+            8.0,
+            egui::Stroke::new(1.0, self.accent()),
+            egui::StrokeKind::Outside,
+        );
 
         for line in &self.project.overlay_lines {
             let a = egui::pos2(
