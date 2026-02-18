@@ -23,3 +23,21 @@ A Rust desktop prototype for data-driven BAS estimating and submittal workflows.
 ```bash
 cargo run
 ```
+
+## Troubleshooting Windows build path issues
+
+If you build from a synced directory (for example OneDrive) and see errors like:
+
+- `output path is not a writable directory`
+- panic in `autocfg` during build scripts (`num-traits`, `memoffset`, etc.)
+
+this project now forces Cargo output into a local repo folder via `.cargo/config.toml` (`.cargo-target`).
+
+If you still hit the issue, run:
+
+```bash
+cargo clean
+# optional: delete old target dir if present
+# rmdir /s /q target   (Windows cmd)
+cargo build
+```
