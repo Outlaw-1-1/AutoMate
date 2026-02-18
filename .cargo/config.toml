@@ -1,0 +1,4 @@
+[build]
+# Use a repository-local target directory to avoid inherited/locked target paths
+# (common with synced folders such as OneDrive).
+target-dir = ".cargo-target"
