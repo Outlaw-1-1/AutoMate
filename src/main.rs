@@ -294,47 +294,40 @@ impl AutoMateApp {
         Color32::from_rgba_unmultiplied(r, g, b, a)
     }
 
-    fn glass_panel() -> egui::Frame {
+    fn surface_panel() -> egui::Frame {
         egui::Frame::default()
-            .fill(Color32::from_rgba_unmultiplied(18, 24, 34, 170))
+            .fill(Color32::from_rgba_unmultiplied(27, 30, 35, 242))
             .stroke(egui::Stroke::new(
                 1.0,
-                Color32::from_rgba_unmultiplied(255, 255, 255, 35),
+                Color32::from_rgba_unmultiplied(255, 255, 255, 28),
             ))
-            .rounding(egui::Rounding::same(12.0))
+            .rounding(egui::Rounding::same(8.0))
             .inner_margin(egui::Margin::same(14.0))
-            .outer_margin(egui::Margin::same(4.0))
+            .outer_margin(egui::Margin::same(2.0))
             .shadow(Shadow {
-                offset: egui::vec2(0.0, 10.0),
-                blur: 20.0,
+                offset: egui::vec2(0.0, 6.0),
+                blur: 16.0,
                 spread: 0.0,
-                color: Color32::from_rgba_unmultiplied(0, 0, 0, 70),
+                color: Color32::from_rgba_unmultiplied(0, 0, 0, 95),
             })
     }
 
     fn card_frame() -> egui::Frame {
         egui::Frame::default()
-            .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 16))
+            .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 10))
             .stroke(egui::Stroke::new(
                 1.0,
-                Color32::from_rgba_unmultiplied(255, 255, 255, 40),
+                Color32::from_rgba_unmultiplied(255, 255, 255, 26),
             ))
-            .rounding(egui::Rounding::same(10.0))
+            .rounding(egui::Rounding::same(8.0))
             .inner_margin(egui::Margin::same(8.0))
     }
 
-    fn draw_breathing_background(&self, ctx: &egui::Context) {
+    fn draw_studio_background(&self, ctx: &egui::Context) {
         let rect = ctx.screen_rect();
-        let t = ctx.input(|i| i.time) as f32;
-        let breath = ((t * 0.7).sin() + 1.0) * 0.5;
         let accent = self.accent();
-        let top = Color32::from_rgba_unmultiplied(
-            (38.0 + breath * 26.0) as u8,
-            (42.0 + breath * 26.0) as u8,
-            (50.0 + breath * 30.0) as u8,
-            255,
-        );
-        let bottom = Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 255);
+        let top = Color32::from_rgba_unmultiplied(23, 25, 29, 255);
+        let bottom = Color32::from_rgba_unmultiplied(16, 17, 20, 255);
 
         let mut mesh = Mesh::default();
         let i = mesh.vertices.len() as u32;
@@ -362,6 +355,74 @@ impl AutoMateApp {
             .extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
         ctx.layer_painter(egui::LayerId::background())
             .add(egui::Shape::mesh(mesh));
+
+        let glow_radius = rect.width().min(rect.height()) * 0.55;
+        let glow_center = egui::pos2(
+            rect.right() - glow_radius * 0.32,
+            rect.top() + glow_radius * 0.35,
+        );
+        ctx.layer_painter(egui::LayerId::background())
+            .circle_filled(
+                glow_center,
+                glow_radius,
+                Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 24),
+            );
+    }
+
+    fn workspace_header(&mut self, ui: &mut Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Workspace").strong().size(16.0));
+            ui.separator();
+            for view in [
+                ToolView::ProjectSettings,
+                ToolView::HoursEstimator,
+                ToolView::DrawingsOverlay,
+                ToolView::Templates,
+            ] {
+                let is_selected = self.current_view == view;
+                if ui.selectable_label(is_selected, view.label()).clicked() {
+                    self.current_view = view;
+                }
+            }
+        });
+
+        ui.add_space(8.0);
+        Self::card_frame().show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let buildings = self
+                    .project
+                    .objects
+                    .iter()
+                    .filter(|o| o.object_type == ObjectType::Building)
+                    .count();
+                let controllers = self
+                    .project
+                    .objects
+                    .iter()
+                    .filter(|o| o.object_type == ObjectType::Controller)
+                    .count();
+                let equipment = self
+                    .project
+                    .objects
+                    .iter()
+                    .filter(|o| o.object_type == ObjectType::Equipment)
+                    .count();
+                let points = self
+                    .project
+                    .objects
+                    .iter()
+                    .filter(|o| o.object_type == ObjectType::Point)
+                    .count();
+
+                ui.monospace(format!("Buildings: {buildings}"));
+                ui.separator();
+                ui.monospace(format!("Controllers: {controllers}"));
+                ui.separator();
+                ui.monospace(format!("Equipment: {equipment}"));
+                ui.separator();
+                ui.monospace(format!("Points: {points}"));
+            });
+        });
     }
 
     fn add_object(&mut self, object_type: ObjectType, parent: Option<u64>) {
@@ -430,16 +491,20 @@ impl AutoMateApp {
 
     fn titlebar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("titlebar")
-            .frame(Self::glass_panel())
+            .frame(Self::surface_panel())
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new("▦ AutoMate BAS Studio")
-                            .font(FontId::new(22.0, FontFamily::Monospace))
+                        RichText::new("AutoMate BAS Studio")
+                            .font(FontId::new(22.0, FontFamily::Proportional))
                             .color(self.accent()),
                     );
                     ui.separator();
-                    ui.label(format!("📁 {}", self.project.name));
+                    ui.label(
+                        RichText::new(format!("PROJECT  {}", self.project.name.to_uppercase()))
+                            .font(FontId::new(11.0, FontFamily::Monospace))
+                            .color(Color32::from_rgba_unmultiplied(215, 215, 220, 190)),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("✕").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1146,10 +1211,21 @@ impl AutoMateApp {
 
 impl App for AutoMateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        self.draw_breathing_background(ctx);
+        self.draw_studio_background(ctx);
 
         let mut style = (*ctx.style()).clone();
         style.spacing.item_spacing = egui::vec2(10.0, 10.0);
+        style.visuals.window_fill = Color32::from_rgb(27, 30, 35);
+        style.visuals.panel_fill = Color32::from_rgb(27, 30, 35);
+        style.visuals.widgets.noninteractive.bg_fill =
+            Color32::from_rgba_unmultiplied(255, 255, 255, 8);
+        style.visuals.widgets.inactive.bg_fill = Color32::from_rgba_unmultiplied(255, 255, 255, 12);
+        style.visuals.widgets.hovered.bg_fill = Color32::from_rgba_unmultiplied(
+            self.accent().r(),
+            self.accent().g(),
+            self.accent().b(),
+            100,
+        );
         style.visuals.widgets.active.bg_fill = self.accent();
         style.visuals.widgets.hovered.bg_fill = Color32::from_rgba_unmultiplied(
             self.accent().r(),
@@ -1157,15 +1233,21 @@ impl App for AutoMateApp {
             self.accent().b(),
             120,
         );
+        style.visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(
+            self.accent().r(),
+            self.accent().g(),
+            self.accent().b(),
+            128,
+        );
         ctx.set_style(style);
 
         self.titlebar(ctx);
         egui::TopBottomPanel::top("toolbar")
-            .frame(Self::glass_panel())
+            .frame(Self::surface_panel())
             .show(ctx, |ui| self.toolbar_dropdowns(ui));
 
         egui::TopBottomPanel::bottom("status")
-            .frame(Self::glass_panel())
+            .frame(Self::surface_panel())
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(self.status.as_str());
@@ -1178,22 +1260,26 @@ impl App for AutoMateApp {
         egui::SidePanel::left("objects")
             .resizable(true)
             .default_width(330.0)
-            .frame(Self::glass_panel())
+            .frame(Self::surface_panel())
             .show(ctx, |ui| self.left_sidebar(ui));
 
         egui::SidePanel::right("properties")
             .resizable(true)
             .default_width(360.0)
-            .frame(Self::glass_panel())
+            .frame(Self::surface_panel())
             .show(ctx, |ui| self.right_properties(ui));
 
         egui::CentralPanel::default()
-            .frame(Self::glass_panel().inner_margin(egui::Margin::same(18.0)))
-            .show(ctx, |ui| match self.current_view {
-                ToolView::ProjectSettings => self.project_settings_view(ui),
-                ToolView::HoursEstimator => self.hours_estimator_view(ui),
-                ToolView::DrawingsOverlay => self.drawings_overlay_view(ui),
-                ToolView::Templates => self.templates_view(ui),
+            .frame(Self::surface_panel().inner_margin(egui::Margin::same(18.0)))
+            .show(ctx, |ui| {
+                self.workspace_header(ui);
+                ui.separator();
+                match self.current_view {
+                    ToolView::ProjectSettings => self.project_settings_view(ui),
+                    ToolView::HoursEstimator => self.hours_estimator_view(ui),
+                    ToolView::DrawingsOverlay => self.drawings_overlay_view(ui),
+                    ToolView::Templates => self.templates_view(ui),
+                }
             });
 
         self.dialogs(ctx);
