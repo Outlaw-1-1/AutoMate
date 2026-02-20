@@ -199,32 +199,6 @@ struct AutoMateApp {
 impl AutoMateApp {
     fn new(cc: &CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        let mut fonts = egui::FontDefinitions::default();
-        fonts
-            .families
-            .entry(FontFamily::Name("Engineering".into()))
-            .or_default()
-            .extend([
-                "Bahnschrift".to_string(),
-                "DIN Alternate".to_string(),
-                "Consolas".to_string(),
-            ]);
-        fonts
-            .families
-            .entry(FontFamily::Proportional)
-            .or_default()
-            .insert(0, "Engineering".to_string());
-        fonts
-            .families
-            .entry(FontFamily::Name("Icons".into()))
-            .or_default()
-            .extend([
-                "Segoe UI Symbol".to_string(),
-                "Noto Color Emoji".to_string(),
-                "EmojiOne Color".to_string(),
-            ]);
-        cc.egui_ctx.set_fonts(fonts);
-
         Self {
             project: Project::default(),
             current_view: ToolView::ProjectSettings,
@@ -376,7 +350,7 @@ impl AutoMateApp {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("▦ AutoMate BAS Studio")
-                            .font(FontId::new(22.0, FontFamily::Name("Engineering".into())))
+                            .font(FontId::new(22.0, FontFamily::Monospace))
                             .color(self.accent()),
                     );
                     ui.separator();
