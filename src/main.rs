@@ -253,15 +253,15 @@ impl AutoMateApp {
             .rounding(egui::Rounding::same(12.0))
             .inner_margin(egui::Margin::same(14.0))
             .shadow(Shadow {
-                offset: [0, 10],
-                blur: 20,
-                spread: 0,
+                offset: egui::vec2(0.0, 10.0),
+                blur: 20.0,
+                spread: 0.0,
                 color: Color32::from_rgba_unmultiplied(0, 0, 0, 70),
             })
     }
 
     fn draw_breathing_background(&self, ctx: &egui::Context) {
-        let rect = ctx.content_rect();
+        let rect = ctx.screen_rect();
         let t = ctx.input(|i| i.time) as f32;
         let breath = ((t * 0.7).sin() + 1.0) * 0.5;
         let accent = self.accent();
