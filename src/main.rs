@@ -1,11 +1,19 @@
 use eframe::{
-    egui::{self, menu, Color32, FontFamily, FontId, RichText, Ui},
+    egui::{self, menu, Color32, FontFamily, FontId, RichText, TextureHandle, Ui},
     epaint::{Mesh, Shadow, Vertex},
     App, CreationContext, Frame, NativeOptions,
 };
+use pdfium_render::prelude::*;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, path::PathBuf, time::Instant};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{Cursor, Read, Write},
+    path::{Path, PathBuf},
+    time::Instant,
+};
+use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
 fn main() -> eframe::Result<()> {
     let options = NativeOptions {
@@ -130,6 +138,9 @@ struct OverlayLine {
 struct AppSettings {
     accent_color: [u8; 4],
     company_name: String,
+    autosave_minutes: u32,
+    ui_scale: f32,
+    show_overlay_grid: bool,
 }
 
 impl Default for AppSettings {
@@ -137,6 +148,9 @@ impl Default for AppSettings {
         Self {
             accent_color: [74, 154, 255, 255],
             company_name: "AutoMate Controls".to_string(),
+            autosave_minutes: 10,
+            ui_scale: 1.0,
+            show_overlay_grid: true,
         }
     }
 }
@@ -282,6 +296,10 @@ struct AutoMateApp {
     login_username: String,
     login_password: String,
     login_error: Option<String>,
+    overview_image_bytes: Option<Vec<u8>>,
+    overview_texture: Option<TextureHandle>,
+    overlay_pdf_bytes: Option<Vec<u8>>,
+    overlay_texture: Option<TextureHandle>,
 }
 
 impl AutoMateApp {
@@ -303,6 +321,10 @@ impl AutoMateApp {
             login_username: String::new(),
             login_password: String::new(),
             login_error: None,
+            overview_image_bytes: None,
+            overview_texture: None,
+            overlay_pdf_bytes: None,
+            overlay_texture: None,
         }
     }
 
@@ -416,8 +438,7 @@ impl AutoMateApp {
 
     fn splash_screen(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space((ui.available_height() - 210.0).max(10.0));
+            ui.centered_and_justified(|ui| {
                 Self::surface_panel().show(ui, |ui| {
                     ui.set_width(460.0);
                     self.draw_mark(ui);
@@ -449,8 +470,7 @@ impl AutoMateApp {
 
     fn login_screen(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space((ui.available_height() - 250.0).max(10.0));
+            ui.centered_and_justified(|ui| {
                 Self::surface_panel().show(ui, |ui| {
                     ui.set_width(720.0);
                     ui.horizontal(|ui| {
@@ -518,6 +538,94 @@ impl AutoMateApp {
                 });
             });
         });
+    }
+
+    fn obfuscate(buffer: &mut [u8]) {
+        for byte in buffer {
+            *byte ^= 0xA5;
+        }
+    }
+
+    fn sanitize_asset_name(path: &Path) -> String {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.replace(' ', "_"))
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "asset.bin".to_string())
+    }
+
+    fn refresh_overview_texture(&mut self, ctx: &egui::Context) {
+        let Some(bytes) = &self.overview_image_bytes else {
+            self.overview_texture = None;
+            return;
+        };
+        if let Ok(img) = image::load_from_memory(bytes) {
+            let rgba = img.to_rgba8();
+            let size = [rgba.width() as usize, rgba.height() as usize];
+            let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+            self.overview_texture =
+                Some(ctx.load_texture("overview_image", color_image, egui::TextureOptions::LINEAR));
+        }
+    }
+
+    fn refresh_overlay_texture(&mut self, ctx: &egui::Context, target_width: u16) {
+        let Some(bytes) = &self.overlay_pdf_bytes else {
+            self.overlay_texture = None;
+            return;
+        };
+
+        let bindings = match Pdfium::bind_to_system_library() {
+            Ok(bindings) => bindings,
+            Err(err) => {
+                self.status = format!(
+                    "PDF renderer unavailable ({err}). Install PDFium and ensure it is on PATH."
+                );
+                self.overlay_texture = None;
+                return;
+            }
+        };
+
+        let pdfium = Pdfium::new(bindings);
+        let document = match pdfium.load_pdf_from_byte_vec(bytes.clone(), None) {
+            Ok(doc) => doc,
+            Err(err) => {
+                self.status = format!("PDF load failed: {err}");
+                self.overlay_texture = None;
+                return;
+            }
+        };
+
+        let page = match document.pages().get(0) {
+            Ok(page) => page,
+            Err(err) => {
+                self.status = format!("PDF page read failed: {err}");
+                self.overlay_texture = None;
+                return;
+            }
+        };
+
+        let render = match page.render_with_config(
+            &PdfRenderConfig::new()
+                .set_target_width(target_width.max(400) as i32)
+                .render_form_data(true),
+        ) {
+            Ok(render) => render,
+            Err(err) => {
+                self.status = format!("PDF render failed: {err}");
+                self.overlay_texture = None;
+                return;
+            }
+        };
+
+        let image = render.as_image();
+        let rgba = image.to_rgba8();
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+        self.overlay_texture = Some(ctx.load_texture(
+            "overlay_pdf_page",
+            color_image,
+            egui::TextureOptions::LINEAR,
+        ));
     }
 
     fn workspace_header(&mut self, ui: &mut Ui) {
@@ -602,45 +710,121 @@ impl AutoMateApp {
     fn save_project(&mut self) {
         let path = self.project_path.clone().or_else(|| {
             FileDialog::new()
-                .add_filter("AutoMate Project", &["json"])
-                .set_file_name("project.json")
+                .add_filter("M8 Project", &["m8"])
+                .set_file_name("project.m8")
                 .save_file()
         });
         if let Some(path) = path {
-            match serde_json::to_string_pretty(&self.project) {
-                Ok(payload) => match fs::write(&path, payload) {
-                    Ok(_) => {
-                        self.status = format!("Saved {}", path.display());
-                        self.project_path = Some(path);
+            match serde_json::to_vec_pretty(&self.project) {
+                Ok(project_payload) => {
+                    let mut archive_data = Vec::new();
+                    let mut zip = ZipWriter::new(Cursor::new(&mut archive_data));
+                    let options = SimpleFileOptions::default();
+
+                    if zip.start_file("project.json", options).is_err()
+                        || zip.write_all(&project_payload).is_err()
+                    {
+                        self.status = "Save failed: unable to write project.json".to_string();
+                        return;
                     }
-                    Err(e) => self.status = format!("Save failed: {e}"),
-                },
+
+                    if let (Some(name), Some(bytes)) =
+                        (&self.project.overview_image, &self.overview_image_bytes)
+                    {
+                        if zip.start_file(format!("assets/{name}"), options).is_ok() {
+                            let _ = zip.write_all(bytes);
+                        }
+                    }
+
+                    if let (Some(name), Some(bytes)) =
+                        (&self.project.overlay_pdf, &self.overlay_pdf_bytes)
+                    {
+                        if zip.start_file(format!("assets/{name}"), options).is_ok() {
+                            let _ = zip.write_all(bytes);
+                        }
+                    }
+
+                    if zip.finish().is_err() {
+                        self.status = "Save failed: unable to finish archive".to_string();
+                        return;
+                    }
+
+                    Self::obfuscate(&mut archive_data);
+                    match fs::write(&path, archive_data) {
+                        Ok(_) => {
+                            self.status = format!("Saved {}", path.display());
+                            self.project_path = Some(path);
+                        }
+                        Err(e) => self.status = format!("Save failed: {e}"),
+                    }
+                }
                 Err(e) => self.status = format!("Serialization failed: {e}"),
             }
         }
     }
 
-    fn load_project(&mut self) {
+    fn load_project(&mut self, ctx: &egui::Context) {
         if let Some(path) = FileDialog::new()
-            .add_filter("AutoMate Project", &["json"])
+            .add_filter("M8 Project", &["m8"])
             .pick_file()
         {
-            match fs::read_to_string(&path) {
-                Ok(content) => match serde_json::from_str::<Project>(&content) {
-                    Ok(project) => {
-                        self.project = project;
-                        self.project_path = Some(path.clone());
-                        self.status = format!("Loaded {}", path.display());
-                        self.selected_object = self.project.objects.first().map(|o| o.id);
+            match fs::read(&path) {
+                Ok(mut content) => {
+                    Self::obfuscate(&mut content);
+                    let reader = Cursor::new(content);
+                    match ZipArchive::new(reader) {
+                        Ok(mut archive) => {
+                            let mut project_json = String::new();
+                            if let Ok(mut file) = archive.by_name("project.json") {
+                                let _ = file.read_to_string(&mut project_json);
+                            }
+
+                            match serde_json::from_str::<Project>(&project_json) {
+                                Ok(project) => {
+                                    self.project = project;
+                                    self.overview_image_bytes = None;
+                                    self.overlay_pdf_bytes = None;
+                                    self.overview_texture = None;
+                                    self.overlay_texture = None;
+
+                                    if let Some(name) = &self.project.overview_image {
+                                        if let Ok(mut file) =
+                                            archive.by_name(&format!("assets/{name}"))
+                                        {
+                                            let mut bytes = Vec::new();
+                                            let _ = file.read_to_end(&mut bytes);
+                                            self.overview_image_bytes = Some(bytes);
+                                            self.refresh_overview_texture(ctx);
+                                        }
+                                    }
+
+                                    if let Some(name) = &self.project.overlay_pdf {
+                                        if let Ok(mut file) =
+                                            archive.by_name(&format!("assets/{name}"))
+                                        {
+                                            let mut bytes = Vec::new();
+                                            let _ = file.read_to_end(&mut bytes);
+                                            self.overlay_pdf_bytes = Some(bytes);
+                                        }
+                                    }
+
+                                    self.project_path = Some(path.clone());
+                                    self.status = format!("Loaded {}", path.display());
+                                    self.selected_object =
+                                        self.project.objects.first().map(|o| o.id);
+                                }
+                                Err(e) => self.status = format!("Parse failed: {e}"),
+                            }
+                        }
+                        Err(e) => self.status = format!("Load failed: {e}"),
                     }
-                    Err(e) => self.status = format!("Parse failed: {e}"),
-                },
+                }
                 Err(e) => self.status = format!("Load failed: {e}"),
             }
         }
     }
 
-    fn titlebar(&mut self, ctx: &egui::Context) {
+    fn titlebar(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         egui::TopBottomPanel::top("titlebar")
             .frame(Self::surface_panel())
             .show(ctx, |ui| {
@@ -657,11 +841,14 @@ impl AutoMateApp {
                             .color(Color32::from_rgba_unmultiplied(215, 215, 220, 190)),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("✕").clicked() {
+                        if ui.add_sized([28.0, 22.0], egui::Button::new("✕")).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                         if ui
-                            .button(if self.is_fullscreen { "🗗" } else { "🗖" })
+                            .add_sized(
+                                [28.0, 22.0],
+                                egui::Button::new(if self.is_fullscreen { "🗗" } else { "🗖" }),
+                            )
                             .clicked()
                         {
                             self.is_fullscreen = !self.is_fullscreen;
@@ -669,21 +856,11 @@ impl AutoMateApp {
                                 self.is_fullscreen,
                             ));
                         }
-                        if ui.button("—").clicked() {
+                        if ui.add_sized([28.0, 22.0], egui::Button::new("—")).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
                     });
                 });
-
-                let drag_area = ui.max_rect();
-                let response = ui.interact(
-                    drag_area,
-                    ui.id().with("titlebar_drag"),
-                    egui::Sense::click_and_drag(),
-                );
-                if response.dragged() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                }
             });
     }
 
@@ -707,6 +884,10 @@ impl AutoMateApp {
                     self.project = Project::default();
                     self.selected_object = Some(1);
                     self.project_path = None;
+                    self.overview_image_bytes = None;
+                    self.overview_texture = None;
+                    self.overlay_pdf_bytes = None;
+                    self.overlay_texture = None;
                     ui.close_menu();
                 }
                 if ui.button("Save").clicked() {
@@ -714,12 +895,12 @@ impl AutoMateApp {
                     ui.close_menu();
                 }
                 if ui.button("Load").clicked() {
-                    self.load_project();
+                    self.load_project(ui.ctx());
                     ui.close_menu();
                 }
             });
-            ui.menu_button("🎨 View", |ui| {
-                if ui.button("Software Settings").clicked() {
+            ui.menu_button("⚙ Settings", |ui| {
+                if ui.button("Open Settings").clicked() {
                     self.show_software_settings = true;
                     ui.close_menu();
                 }
@@ -741,7 +922,16 @@ impl AutoMateApp {
                         .add_filter("Images", &["png", "jpg", "jpeg", "bmp"])
                         .pick_file()
                     {
-                        self.project.overview_image = Some(path.display().to_string());
+                        match fs::read(&path) {
+                            Ok(bytes) => {
+                                self.project.overview_image =
+                                    Some(Self::sanitize_asset_name(&path));
+                                self.overview_image_bytes = Some(bytes);
+                                self.refresh_overview_texture(ui.ctx());
+                                self.status = "Loaded overview image".to_string();
+                            }
+                            Err(err) => self.status = format!("Image load failed: {err}"),
+                        }
                     }
                 }
                 if let Some(path) = &self.project.overview_image {
@@ -749,6 +939,12 @@ impl AutoMateApp {
                 }
             });
             ui.separator();
+            if let Some(texture) = &self.overview_texture {
+                let w = ui.available_width().max(120.0);
+                let h = (w * 0.56).clamp(90.0, 220.0);
+                ui.add(egui::Image::new(texture).fit_to_exact_size(egui::vec2(w, h)));
+                ui.separator();
+            }
             ui.label(RichText::new("Project Overview").strong());
             ui.label(format!("Client: {}", self.project.proposal.client_name));
             ui.label(format!(
@@ -1014,14 +1210,16 @@ impl AutoMateApp {
         egui::ScrollArea::vertical().show(ui, |ui| {
             Self::card_frame().show(ui, |ui| {
                 ui.label(RichText::new("Project Core").strong());
-                ui.horizontal(|ui| {
-                    ui.label("Project Name");
-                    ui.text_edit_singleline(&mut self.project.name);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Project Notes");
-                    ui.text_edit_singleline(&mut self.project.notes);
-                });
+                ui.label("Project Name");
+                ui.add_sized(
+                    [ui.available_width(), 24.0],
+                    egui::TextEdit::singleline(&mut self.project.name),
+                );
+                ui.label("Project Notes");
+                ui.add_sized(
+                    [ui.available_width(), 24.0],
+                    egui::TextEdit::singleline(&mut self.project.notes),
+                );
             });
 
             Self::card_frame().show(ui, |ui| {
@@ -1251,7 +1449,15 @@ impl AutoMateApp {
         ui.horizontal(|ui| {
             if ui.button("Load PDF").clicked() {
                 if let Some(pdf) = FileDialog::new().add_filter("PDF", &["pdf"]).pick_file() {
-                    self.project.overlay_pdf = Some(pdf.display().to_string());
+                    match fs::read(&pdf) {
+                        Ok(bytes) => {
+                            self.project.overlay_pdf = Some(Self::sanitize_asset_name(&pdf));
+                            self.overlay_pdf_bytes = Some(bytes);
+                            self.overlay_texture = None;
+                            self.status = "Loaded overlay PDF".to_string();
+                        }
+                        Err(err) => self.status = format!("PDF load failed: {err}"),
+                    }
                 }
             }
             ui.label(
@@ -1274,12 +1480,56 @@ impl AutoMateApp {
 
         let desired = egui::vec2(ui.available_width(), ui.available_height() - 16.0);
         let (resp, painter) = ui.allocate_painter(desired, egui::Sense::click_and_drag());
+        if self.overlay_texture.is_none() && self.overlay_pdf_bytes.is_some() {
+            self.refresh_overlay_texture(ui.ctx(), desired.x as u16);
+        }
         painter.rect_filled(
             resp.rect,
             10.0,
             Color32::from_rgba_unmultiplied(255, 255, 255, 16),
         );
         painter.rect_stroke(resp.rect, 10.0, egui::Stroke::new(1.0, self.accent()));
+
+        if let Some(texture) = &self.overlay_texture {
+            painter.image(
+                texture.id(),
+                resp.rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::from_rgba_unmultiplied(255, 255, 255, 210),
+            );
+        }
+
+        if self.project.settings.show_overlay_grid {
+            let step = 36.0;
+            let mut x = resp.rect.left();
+            while x < resp.rect.right() {
+                painter.line_segment(
+                    [
+                        egui::pos2(x, resp.rect.top()),
+                        egui::pos2(x, resp.rect.bottom()),
+                    ],
+                    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 16)),
+                );
+                x += step;
+            }
+            let mut y = resp.rect.top();
+            while y < resp.rect.bottom() {
+                painter.line_segment(
+                    [
+                        egui::pos2(resp.rect.left(), y),
+                        egui::pos2(resp.rect.right(), y),
+                    ],
+                    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 16)),
+                );
+                y += step;
+            }
+        }
+
+        for node in &self.project.overlay_nodes {
+            let center = egui::pos2(resp.rect.left() + node.x, resp.rect.top() + node.y);
+            painter.circle_filled(center, 6.0, self.accent());
+            painter.circle_stroke(center, 8.0, egui::Stroke::new(1.0, Color32::WHITE));
+        }
 
         for line in &self.project.overlay_lines {
             let a = egui::pos2(
@@ -1336,7 +1586,7 @@ impl AutoMateApp {
         }
 
         if self.show_software_settings {
-            egui::Window::new("Software Settings")
+            egui::Window::new("Settings")
                 .open(&mut self.show_software_settings)
                 .show(ctx, |ui| {
                     ui.label("Accent Color");
@@ -1347,6 +1597,18 @@ impl AutoMateApp {
                         ui.label("Company Name");
                         ui.text_edit_singleline(&mut self.project.settings.company_name);
                     });
+                    ui.add(
+                        egui::Slider::new(&mut self.project.settings.autosave_minutes, 1..=60)
+                            .text("Autosave (minutes)"),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut self.project.settings.ui_scale, 0.8..=1.5)
+                            .text("UI Scale"),
+                    );
+                    ui.checkbox(
+                        &mut self.project.settings.show_overlay_grid,
+                        "Show overlay grid",
+                    );
                 });
         }
     }
@@ -1363,14 +1625,18 @@ impl AutoMateApp {
 impl App for AutoMateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         self.draw_studio_background(ctx);
+        ctx.set_pixels_per_point(self.project.settings.ui_scale);
 
         let mut style = (*ctx.style()).clone();
         style.spacing.item_spacing = egui::vec2(10.0, 10.0);
         style.visuals.window_fill = Color32::from_rgb(27, 30, 35);
         style.visuals.panel_fill = Color32::from_rgb(27, 30, 35);
         style.visuals.widgets.noninteractive.bg_fill =
-            Color32::from_rgba_unmultiplied(255, 255, 255, 8);
-        style.visuals.widgets.inactive.bg_fill = Color32::from_rgba_unmultiplied(255, 255, 255, 12);
+            Color32::from_rgba_unmultiplied(255, 255, 255, 10);
+        style.visuals.override_text_color = Some(Color32::from_rgb(226, 233, 242));
+        style.visuals.extreme_bg_color = Color32::from_rgb(11, 16, 24);
+        style.visuals.widgets.inactive.bg_fill = Color32::from_rgba_unmultiplied(32, 38, 48, 230);
+        style.visuals.widgets.inactive.fg_stroke.color = Color32::from_rgb(225, 231, 240);
         style.visuals.widgets.hovered.bg_fill = Color32::from_rgba_unmultiplied(
             self.accent().r(),
             self.accent().g(),
@@ -1396,7 +1662,7 @@ impl App for AutoMateApp {
             AppScreen::Splash => self.splash_screen(ctx),
             AppScreen::Login => self.login_screen(ctx),
             AppScreen::Studio => {
-                self.titlebar(ctx);
+                self.titlebar(ctx, _frame);
                 egui::TopBottomPanel::top("toolbar")
                     .frame(Self::surface_panel())
                     .show(ctx, |ui| self.toolbar_dropdowns(ui));
@@ -1427,6 +1693,7 @@ impl App for AutoMateApp {
                 egui::CentralPanel::default()
                     .frame(Self::surface_panel().inner_margin(egui::Margin::same(18.0)))
                     .show(ctx, |ui| {
+                        ui.set_width(ui.available_width());
                         self.workspace_header(ui);
                         ui.separator();
                         match self.current_view {
