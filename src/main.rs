@@ -1,5 +1,5 @@
 use eframe::{
-    egui::{self, menu, Color32, FontFamily, FontId, RichText, TextureHandle, Ui},
+    egui::{self, menu, Color32, FontFamily, FontId, RichText, Sense, TextureHandle, Ui},
     epaint::{Mesh, Shadow, Vertex},
     App, CreationContext, Frame, NativeOptions,
 };
@@ -7,7 +7,7 @@ use pdfium_render::prelude::*;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{Cursor, Read, Write},
     path::{Path, PathBuf},
@@ -18,8 +18,9 @@ use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 fn main() -> eframe::Result<()> {
     let options = NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_fullscreen(true)
+            .with_fullscreen(false)
             .with_decorations(false)
+            .with_resizable(true)
             .with_inner_size([1600.0, 920.0]),
         ..Default::default()
     };
@@ -271,7 +272,50 @@ impl Default for Project {
             overlay_pdf: None,
             overlay_nodes: vec![],
             overlay_lines: vec![],
-            templates: vec![EquipmentTemplate::default()],
+            templates: vec![
+                EquipmentTemplate::default(),
+                EquipmentTemplate {
+                    name: "AHU Typical".to_string(),
+                    equipment_type: "AHU".to_string(),
+                    points: vec![
+                        "Supply Temp".to_string(),
+                        "Return Temp".to_string(),
+                        "Static Pressure".to_string(),
+                        "Fan Cmd".to_string(),
+                        "Filter DP".to_string(),
+                    ],
+                    engineering_hours: 5.0,
+                    graphics_hours: 2.0,
+                    commissioning_hours: 3.0,
+                },
+                EquipmentTemplate {
+                    name: "Boiler Plant".to_string(),
+                    equipment_type: "Boiler".to_string(),
+                    points: vec![
+                        "Enable".to_string(),
+                        "Water Temp".to_string(),
+                        "Status".to_string(),
+                        "Alarm".to_string(),
+                    ],
+                    engineering_hours: 4.0,
+                    graphics_hours: 1.5,
+                    commissioning_hours: 2.5,
+                },
+                EquipmentTemplate {
+                    name: "Chiller".to_string(),
+                    equipment_type: "Chiller".to_string(),
+                    points: vec![
+                        "CHWS Temp".to_string(),
+                        "CHWR Temp".to_string(),
+                        "Run Cmd".to_string(),
+                        "kW".to_string(),
+                        "Fault".to_string(),
+                    ],
+                    engineering_hours: 5.0,
+                    graphics_hours: 2.0,
+                    commissioning_hours: 3.0,
+                },
+            ],
             custom_hour_lines: vec![],
             next_id: 2,
             settings: AppSettings::default(),
@@ -437,31 +481,13 @@ impl AutoMateApp {
     }
 
     fn splash_screen(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.centered_and_justified(|ui| {
-                Self::surface_panel().show(ui, |ui| {
-                    ui.set_width(460.0);
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(Color32::TRANSPARENT))
+            .show(ctx, |ui| {
+                ui.centered_and_justified(|ui| {
                     self.draw_mark(ui);
-                    ui.label(
-                        RichText::new("M8 • AutoMate Technical Suite")
-                            .size(20.0)
-                            .strong(),
-                    );
-                    ui.label(
-                        RichText::new("Loading secure workspace modules...")
-                            .size(14.0)
-                            .color(Color32::from_gray(190)),
-                    );
-                    ui.add_space(10.0);
-                    let pulse = ((ctx.input(|i| i.time) * 1.35).sin() * 0.5 + 0.5) as f32;
-                    ui.add(
-                        egui::ProgressBar::new(pulse)
-                            .show_percentage()
-                            .desired_width(ui.available_width() - 20.0),
-                    );
                 });
             });
-        });
 
         if self.splash_started_at.elapsed().as_secs_f32() > 2.2 {
             self.app_screen = AppScreen::Login;
@@ -470,9 +496,12 @@ impl AutoMateApp {
 
     fn login_screen(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.centered_and_justified(|ui| {
+            let max_h = ui.available_height() * 0.30;
+            ui.vertical_centered(|ui| {
+                ui.add_space((ui.available_height() - max_h).max(0.0) * 0.45);
                 Self::surface_panel().show(ui, |ui| {
-                    ui.set_width(720.0);
+                    ui.set_width(760.0);
+                    ui.set_height(max_h);
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             self.draw_mark(ui);
@@ -493,7 +522,7 @@ impl AutoMateApp {
                         ui.separator();
 
                         ui.vertical(|ui| {
-                            ui.set_min_width(320.0);
+                            ui.set_min_width(340.0);
                             Self::card_frame_with_alpha(18).show(ui, |ui| {
                                 ui.label(RichText::new("Operator ID").strong());
                                 ui.text_edit_singleline(&mut self.login_username);
@@ -554,6 +583,138 @@ impl AutoMateApp {
             .unwrap_or_else(|| "asset.bin".to_string())
     }
 
+    fn local_pdf_path() -> Option<PathBuf> {
+        std::env::var("AUTOMATE_PDFIUM_LIB")
+            .ok()
+            .map(PathBuf::from)
+            .or_else(|| {
+                let mut candidate = std::env::current_exe().ok()?;
+                candidate.pop();
+                let file = if cfg!(target_os = "windows") {
+                    "pdfium.dll"
+                } else if cfg!(target_os = "macos") {
+                    "libpdfium.dylib"
+                } else {
+                    "libpdfium.so"
+                };
+                candidate.push(file);
+                candidate.exists().then_some(candidate)
+            })
+    }
+
+    fn to_template(line: &HourLine) -> EquipmentTemplate {
+        let name = line.name.trim();
+        EquipmentTemplate {
+            name: if name.is_empty() {
+                "Custom Hour Template".to_string()
+            } else {
+                format!("{} (Hours)", name)
+            },
+            equipment_type: "Custom".to_string(),
+            points: vec!["Template Point".to_string()],
+            engineering_hours: if line.category == "Engineering" {
+                line.quantity.max(0.0) * line.hours_per_unit.max(0.0)
+            } else {
+                0.0
+            },
+            graphics_hours: if line.category == "Graphics" {
+                line.quantity.max(0.0) * line.hours_per_unit.max(0.0)
+            } else {
+                0.0
+            },
+            commissioning_hours: if line.category == "Commissioning" {
+                line.quantity.max(0.0) * line.hours_per_unit.max(0.0)
+            } else {
+                0.0
+            },
+        }
+    }
+
+    fn template_seed_data() -> Vec<EquipmentTemplate> {
+        vec![
+            EquipmentTemplate::default(),
+            EquipmentTemplate {
+                name: "AHU Typical".to_string(),
+                equipment_type: "AHU".to_string(),
+                points: vec![
+                    "Supply Temp".into(),
+                    "Return Temp".into(),
+                    "Static Pressure".into(),
+                    "Fan Cmd".into(),
+                    "Filter DP".into(),
+                ],
+                engineering_hours: 5.0,
+                graphics_hours: 2.0,
+                commissioning_hours: 3.0,
+            },
+            EquipmentTemplate {
+                name: "Boiler Plant".to_string(),
+                equipment_type: "Boiler".to_string(),
+                points: vec![
+                    "Enable".into(),
+                    "Water Temp".into(),
+                    "Status".into(),
+                    "Alarm".into(),
+                ],
+                engineering_hours: 4.0,
+                graphics_hours: 1.5,
+                commissioning_hours: 2.5,
+            },
+            EquipmentTemplate {
+                name: "Chiller".to_string(),
+                equipment_type: "Chiller".to_string(),
+                points: vec![
+                    "CHWS Temp".into(),
+                    "CHWR Temp".into(),
+                    "Run Cmd".into(),
+                    "kW".into(),
+                    "Fault".into(),
+                ],
+                engineering_hours: 5.0,
+                graphics_hours: 2.0,
+                commissioning_hours: 3.0,
+            },
+            EquipmentTemplate {
+                name: "Fan Coil Unit".to_string(),
+                equipment_type: "FCU".to_string(),
+                points: vec![
+                    "Room Temp".into(),
+                    "Fan Speed".into(),
+                    "Valve Cmd".into(),
+                    "Occupancy".into(),
+                ],
+                engineering_hours: 2.5,
+                graphics_hours: 1.0,
+                commissioning_hours: 1.5,
+            },
+        ]
+    }
+
+    fn ensure_template_seeded(&mut self) {
+        if self.project.templates.is_empty() {
+            self.project.templates = Self::template_seed_data();
+        }
+
+        let mut names = BTreeSet::new();
+        self.project
+            .templates
+            .retain(|t| names.insert(t.name.clone()));
+
+        for line in &self.project.custom_hour_lines {
+            let candidate = Self::to_template(line);
+            if let Some(existing) = self
+                .project
+                .templates
+                .iter_mut()
+                .find(|t| t.name == candidate.name)
+            {
+                *existing = candidate;
+            } else {
+                self.project.templates.push(candidate);
+            }
+        }
+    }
+
     fn refresh_overview_texture(&mut self, ctx: &egui::Context) {
         let Some(bytes) = &self.overview_image_bytes else {
             self.overview_texture = None;
@@ -574,12 +735,14 @@ impl AutoMateApp {
             return;
         };
 
-        let bindings = match Pdfium::bind_to_system_library() {
+        let bindings = match Self::local_pdf_path() {
+            Some(path) => Pdfium::bind_to_library(path).map_err(|err| err.to_string()),
+            None => Err("local PDFium binary not found. Place PDFium next to the app or set AUTOMATE_PDFIUM_LIB.".to_string()),
+        };
+        let bindings = match bindings {
             Ok(bindings) => bindings,
             Err(err) => {
-                self.status = format!(
-                    "PDF renderer unavailable ({err}). Install PDFium and ensure it is on PATH."
-                );
+                self.status = format!("PDF renderer unavailable ({err})");
                 self.overlay_texture = None;
                 return;
             }
@@ -647,6 +810,7 @@ impl AutoMateApp {
 
         ui.add_space(8.0);
         Self::card_frame().show(ui, |ui| {
+            ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
                 let buildings = self
                     .project
@@ -828,6 +992,11 @@ impl AutoMateApp {
         egui::TopBottomPanel::top("titlebar")
             .frame(Self::surface_panel())
             .show(ctx, |ui| {
+                let title_rect = ui.max_rect();
+                let drag = ui.interact(title_rect, ui.id().with("titlebar_drag"), Sense::drag());
+                if drag.drag_started() || drag.dragged() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("AutoMate BAS Studio")
@@ -866,19 +1035,6 @@ impl AutoMateApp {
 
     fn toolbar_dropdowns(&mut self, ui: &mut Ui) {
         menu::bar(ui, |ui| {
-            ui.menu_button("🧰 Tools", |ui| {
-                for view in [
-                    ToolView::ProjectSettings,
-                    ToolView::HoursEstimator,
-                    ToolView::DrawingsOverlay,
-                    ToolView::Templates,
-                ] {
-                    if ui.button(view.label()).clicked() {
-                        self.current_view = view;
-                        ui.close_menu();
-                    }
-                }
-            });
             ui.menu_button("📂 Project", |ui| {
                 if ui.button("New").clicked() {
                     self.project = Project::default();
@@ -966,7 +1122,7 @@ impl AutoMateApp {
             self.add_object(ObjectType::Building, None);
         }
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::both().show(ui, |ui| {
             let roots: Vec<u64> = self
                 .project
                 .objects
@@ -986,9 +1142,15 @@ impl AutoMateApp {
         let Some(obj) = obj else { return };
 
         Self::card_frame().show(ui, |ui| {
+            ui.set_width(ui.available_width());
             let selected = self.selected_object == Some(id);
             let title = format!("{} {}", obj.object_type.icon(), obj.name);
-            if ui.selectable_label(selected, title).clicked() {
+            let text = if selected {
+                RichText::new(title).color(Color32::WHITE)
+            } else {
+                RichText::new(title).color(Color32::from_rgb(230, 235, 245))
+            };
+            if ui.selectable_label(selected, text).clicked() {
                 self.selected_object = Some(id);
             }
 
@@ -1207,7 +1369,7 @@ impl AutoMateApp {
 
     fn project_settings_view(&mut self, ui: &mut Ui) {
         ui.heading("Project Settings & Proposal Inputs");
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::both().show(ui, |ui| {
             Self::card_frame().show(ui, |ui| {
                 ui.label(RichText::new("Project Core").strong());
                 ui.label("Project Name");
@@ -1385,7 +1547,7 @@ impl AutoMateApp {
             });
         }
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::both().show(ui, |ui| {
             let mut remove_template = None;
             for (idx, template) in self.project.templates.iter_mut().enumerate() {
                 egui::Frame::default()
@@ -1582,6 +1744,8 @@ impl AutoMateApp {
                 .show(ctx, |ui| {
                     ui.label("AutoMate BAS Studio");
                     ui.label("Data-first takeoff, estimating, and proposal workflow.");
+                    ui.separator();
+                    ui.label(RichText::new("Signature: Built for M8 by ChatGPT").italics());
                 });
         }
 
@@ -1609,6 +1773,34 @@ impl AutoMateApp {
                         &mut self.project.settings.show_overlay_grid,
                         "Show overlay grid",
                     );
+                    ui.separator();
+                    ui.label(RichText::new("Recommendations").strong());
+                    if self.project.settings.autosave_minutes > 15 {
+                        ui.colored_label(Color32::YELLOW, "• Consider autosave ≤ 15 minutes.");
+                    }
+                    if self.project.settings.ui_scale < 0.95
+                        || self.project.settings.ui_scale > 1.25
+                    {
+                        ui.colored_label(
+                            Color32::YELLOW,
+                            "• UI scale between 0.95 and 1.25 is recommended for readability.",
+                        );
+                    }
+                    if self.project.settings.company_name.trim().is_empty() {
+                        ui.colored_label(
+                            Color32::YELLOW,
+                            "• Add a company name for exports and title metadata.",
+                        );
+                    }
+                    if ui.button("Apply Recommended Defaults").clicked() {
+                        self.project.settings.autosave_minutes =
+                            self.project.settings.autosave_minutes.min(15);
+                        self.project.settings.ui_scale =
+                            self.project.settings.ui_scale.clamp(0.95, 1.25);
+                        if self.project.settings.company_name.trim().is_empty() {
+                            self.project.settings.company_name = "AutoMate Controls".to_string();
+                        }
+                    }
                 });
         }
     }
@@ -1624,7 +1816,9 @@ impl AutoMateApp {
 
 impl App for AutoMateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        self.draw_studio_background(ctx);
+        if self.app_screen != AppScreen::Splash {
+            self.draw_studio_background(ctx);
+        }
         ctx.set_pixels_per_point(self.project.settings.ui_scale);
 
         let mut style = (*ctx.style()).clone();
@@ -1662,6 +1856,7 @@ impl App for AutoMateApp {
             AppScreen::Splash => self.splash_screen(ctx),
             AppScreen::Login => self.login_screen(ctx),
             AppScreen::Studio => {
+                self.ensure_template_seeded();
                 self.titlebar(ctx, _frame);
                 egui::TopBottomPanel::top("toolbar")
                     .frame(Self::surface_panel())
