@@ -147,7 +147,7 @@ struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            accent_color: [74, 154, 255, 255],
+            accent_color: [168, 196, 84, 255],
             company_name: "AutoMate Controls".to_string(),
             autosave_minutes: 10,
             ui_scale: 1.0,
@@ -379,28 +379,28 @@ impl AutoMateApp {
 
     fn surface_panel() -> egui::Frame {
         egui::Frame::default()
-            .fill(Color32::from_rgba_unmultiplied(27, 30, 35, 242))
+            .fill(Color32::from_rgba_unmultiplied(18, 23, 34, 236))
             .stroke(egui::Stroke::new(
                 1.0,
-                Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+                Color32::from_rgba_unmultiplied(255, 255, 255, 20),
             ))
             .rounding(egui::Rounding::same(8.0))
             .inner_margin(egui::Margin::same(14.0))
             .outer_margin(egui::Margin::same(2.0))
             .shadow(Shadow {
                 offset: egui::vec2(0.0, 6.0),
-                blur: 16.0,
+                blur: 24.0,
                 spread: 0.0,
-                color: Color32::from_rgba_unmultiplied(0, 0, 0, 95),
+                color: Color32::from_rgba_unmultiplied(0, 0, 0, 130),
             })
     }
 
     fn card_frame() -> egui::Frame {
         egui::Frame::default()
-            .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 10))
+            .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 7))
             .stroke(egui::Stroke::new(
                 1.0,
-                Color32::from_rgba_unmultiplied(255, 255, 255, 26),
+                Color32::from_rgba_unmultiplied(255, 255, 255, 20),
             ))
             .rounding(egui::Rounding::same(8.0))
             .inner_margin(egui::Margin::same(8.0))
@@ -409,8 +409,8 @@ impl AutoMateApp {
     fn draw_studio_background(&self, ctx: &egui::Context) {
         let rect = ctx.screen_rect();
         let accent = self.accent();
-        let top = Color32::from_rgba_unmultiplied(23, 25, 29, 255);
-        let bottom = Color32::from_rgba_unmultiplied(16, 17, 20, 255);
+        let top = Color32::from_rgba_unmultiplied(15, 20, 31, 255);
+        let bottom = Color32::from_rgba_unmultiplied(10, 13, 21, 255);
 
         let mut mesh = Mesh::default();
         let i = mesh.vertices.len() as u32;
@@ -439,7 +439,7 @@ impl AutoMateApp {
         ctx.layer_painter(egui::LayerId::background())
             .add(egui::Shape::mesh(mesh));
 
-        let glow_radius = rect.width().min(rect.height()) * 0.55;
+        let glow_radius = rect.width().min(rect.height()) * 0.7;
         let glow_center = egui::pos2(
             rect.right() - glow_radius * 0.32,
             rect.top() + glow_radius * 0.35,
@@ -449,6 +449,14 @@ impl AutoMateApp {
                 glow_center,
                 glow_radius,
                 Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 24),
+            );
+
+        let secondary_glow_center = egui::pos2(rect.left() + glow_radius * 0.3, rect.bottom());
+        ctx.layer_painter(egui::LayerId::background())
+            .circle_filled(
+                secondary_glow_center,
+                glow_radius * 0.7,
+                Color32::from_rgba_unmultiplied(76, 129, 255, 18),
             );
     }
 
@@ -1607,7 +1615,16 @@ impl AutoMateApp {
     }
 
     fn drawings_overlay_view(&mut self, ui: &mut Ui) {
-        ui.heading("Drawings Overlay");
+        ui.horizontal_wrapped(|ui| {
+            ui.heading("Takeoff Workspace");
+            ui.label(
+                RichText::new(format!(
+                    "{} • Drawing Rev {}",
+                    self.project.name, self.project.proposal.revision
+                ))
+                .color(Color32::from_gray(180)),
+            );
+        });
         ui.horizontal(|ui| {
             if ui.button("Load PDF").clicked() {
                 if let Some(pdf) = FileDialog::new().add_filter("PDF", &["pdf"]).pick_file() {
@@ -1628,6 +1645,14 @@ impl AutoMateApp {
                     .clone()
                     .unwrap_or_else(|| "No PDF selected".to_string()),
             );
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new("Needs Clarification").color(Color32::from_rgb(224, 182, 86)),
+                );
+                ui.label(RichText::new("Assumed").color(Color32::from_rgb(221, 113, 113)));
+                ui.label(RichText::new("Specified").color(Color32::from_rgb(122, 202, 137)));
+            });
         });
 
         ui.separator();
@@ -1687,10 +1712,35 @@ impl AutoMateApp {
             }
         }
 
-        for node in &self.project.overlay_nodes {
+        for (idx, node) in self.project.overlay_nodes.iter().enumerate() {
             let center = egui::pos2(resp.rect.left() + node.x, resp.rect.top() + node.y);
-            painter.circle_filled(center, 6.0, self.accent());
-            painter.circle_stroke(center, 8.0, egui::Stroke::new(1.0, Color32::WHITE));
+            let status_color = match idx % 3 {
+                0 => Color32::from_rgba_unmultiplied(189, 86, 92, 220),
+                1 => Color32::from_rgba_unmultiplied(193, 162, 78, 220),
+                _ => Color32::from_rgba_unmultiplied(91, 156, 103, 220),
+            };
+            let obj_name = self
+                .project
+                .objects
+                .iter()
+                .find(|o| o.id == node.object_id)
+                .map(|o| o.name.as_str())
+                .unwrap_or("Token");
+
+            let label_rect = egui::Rect::from_center_size(center, egui::vec2(138.0, 28.0));
+            painter.rect_filled(label_rect, 6.0, status_color);
+            painter.rect_stroke(
+                label_rect,
+                6.0,
+                egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
+            );
+            painter.text(
+                label_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                obj_name,
+                FontId::new(15.0, FontFamily::Proportional),
+                Color32::WHITE,
+            );
         }
 
         for line in &self.project.overlay_lines {
@@ -1823,13 +1873,13 @@ impl App for AutoMateApp {
 
         let mut style = (*ctx.style()).clone();
         style.spacing.item_spacing = egui::vec2(10.0, 10.0);
-        style.visuals.window_fill = Color32::from_rgb(27, 30, 35);
-        style.visuals.panel_fill = Color32::from_rgb(27, 30, 35);
+        style.visuals.window_fill = Color32::from_rgb(18, 23, 34);
+        style.visuals.panel_fill = Color32::from_rgb(18, 23, 34);
         style.visuals.widgets.noninteractive.bg_fill =
             Color32::from_rgba_unmultiplied(255, 255, 255, 10);
         style.visuals.override_text_color = Some(Color32::from_rgb(226, 233, 242));
-        style.visuals.extreme_bg_color = Color32::from_rgb(11, 16, 24);
-        style.visuals.widgets.inactive.bg_fill = Color32::from_rgba_unmultiplied(32, 38, 48, 230);
+        style.visuals.extreme_bg_color = Color32::from_rgb(9, 12, 20);
+        style.visuals.widgets.inactive.bg_fill = Color32::from_rgba_unmultiplied(28, 36, 49, 230);
         style.visuals.widgets.inactive.fg_stroke.color = Color32::from_rgb(225, 231, 240);
         style.visuals.widgets.hovered.bg_fill = Color32::from_rgba_unmultiplied(
             self.accent().r(),
