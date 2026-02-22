@@ -399,18 +399,14 @@ impl AutoMateApp {
 
     fn draw_mark(&self, ui: &mut Ui) {
         ui.vertical_centered(|ui| {
-            ui.label(
-                RichText::new("M8")
-                    .family(FontFamily::Name("Inter".into()))
-                    .size(84.0)
-                    .strong()
-                    .color(Color32::from_rgba_unmultiplied(
-                        self.accent().r(),
-                        self.accent().g(),
-                        self.accent().b(),
-                        150,
-                    )),
-            );
+            ui.label(RichText::new("M8").size(84.0).strong().color(
+                Color32::from_rgba_unmultiplied(
+                    self.accent().r(),
+                    self.accent().g(),
+                    self.accent().b(),
+                    150,
+                ),
+            ));
         });
     }
 
