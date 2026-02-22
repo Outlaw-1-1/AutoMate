@@ -574,12 +574,12 @@ impl AutoMateApp {
             return;
         };
 
-        let bindings = match Pdfium::bind_to_system_library()
-            .or_else(|_| Pdfium::bind_to_embedded_library())
-        {
+        let bindings = match Pdfium::bind_to_system_library() {
             Ok(bindings) => bindings,
             Err(err) => {
-                self.status = format!("PDF renderer unavailable: {err}");
+                self.status = format!(
+                    "PDF renderer unavailable ({err}). Install PDFium and ensure it is on PATH."
+                );
                 self.overlay_texture = None;
                 return;
             }
