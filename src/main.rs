@@ -917,6 +917,21 @@ impl AutoMateApp {
     }
 
     fn add_object(&mut self, object_type: ObjectType, parent: Option<u64>) {
+        if let Some(parent_id) = parent {
+            let parent_obj = self.project.objects.iter().find(|o| o.id == parent_id);
+            let is_valid_parent = matches!(
+                (object_type, parent_obj.map(|o| o.object_type)),
+                (ObjectType::Controller, Some(ObjectType::Building))
+                    | (ObjectType::Equipment, Some(ObjectType::Controller))
+                    | (ObjectType::Point, Some(ObjectType::Equipment))
+            );
+
+            if !is_valid_parent {
+                self.status = format!("Cannot add {} to selected parent", object_type.label());
+                return;
+            }
+        }
+
         let id = self.project.next_id;
         self.project.next_id += 1;
         self.project.objects.push(BasObject {
@@ -937,6 +952,69 @@ impl AutoMateApp {
             }],
         });
         self.selected_object = Some(id);
+    }
+
+    fn remove_object_subtree(&mut self, id: u64) {
+        let mut to_remove = BTreeSet::new();
+        let mut stack = vec![id];
+
+        while let Some(current) = stack.pop() {
+            if !to_remove.insert(current) {
+                continue;
+            }
+            for child in self
+                .project
+                .objects
+                .iter()
+                .filter(|obj| obj.parent_id == Some(current))
+            {
+                stack.push(child.id);
+            }
+        }
+
+        if to_remove.is_empty() {
+            return;
+        }
+
+        self.project
+            .objects
+            .retain(|obj| !to_remove.contains(&obj.id));
+        self.project
+            .overlay_nodes
+            .retain(|node| !to_remove.contains(&node.object_id));
+
+        if self
+            .selected_object
+            .is_some_and(|selected| to_remove.contains(&selected))
+        {
+            self.selected_object = self.project.objects.first().map(|o| o.id);
+        }
+
+        self.status = "Object deleted".to_string();
+    }
+
+    fn normalize_loaded_project(&mut self) {
+        let valid_ids: BTreeSet<u64> = self.project.objects.iter().map(|o| o.id).collect();
+
+        self.project.objects.retain(|obj| {
+            obj.parent_id
+                .is_none_or(|parent| valid_ids.contains(&parent))
+        });
+
+        let valid_ids: BTreeSet<u64> = self.project.objects.iter().map(|o| o.id).collect();
+        self.project
+            .overlay_nodes
+            .retain(|node| valid_ids.contains(&node.object_id));
+
+        let max_id = self.project.objects.iter().map(|o| o.id).max().unwrap_or(0);
+        self.project.next_id = self.project.next_id.max(max_id + 1);
+
+        if self
+            .selected_object
+            .is_some_and(|selected| !valid_ids.contains(&selected))
+        {
+            self.selected_object = self.project.objects.first().map(|o| o.id);
+        }
     }
 
     fn save_project_to_path(&mut self, path: &Path) -> Result<(), String> {
@@ -1131,6 +1209,7 @@ impl AutoMateApp {
                                     }
 
                                     self.project_path = Some(path.clone());
+                                    self.normalize_loaded_project();
                                     self.status = format!("Loaded {}", path.display());
                                     self.selected_object =
                                         self.project.objects.first().map(|o| o.id);
@@ -1410,6 +1489,18 @@ impl AutoMateApp {
                         obj.object_type.label()
                     ));
                     ui.text_edit_singleline(&mut obj.name);
+
+                    if ui
+                        .button(RichText::new("Delete Object").color(Color32::LIGHT_RED))
+                        .clicked()
+                    {
+                        if obj.object_type == ObjectType::Building {
+                            self.status =
+                                "Delete blocked: building is required at root".to_string();
+                        } else {
+                            self.remove_object_subtree(id);
+                        }
+                    }
 
                     if obj.object_type == ObjectType::Controller {
                         ui.separator();
