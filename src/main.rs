@@ -5,7 +5,7 @@ use eframe::{
 };
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf, time::Instant};
 
 fn main() -> eframe::Result<()> {
     let options = NativeOptions {
@@ -29,6 +29,13 @@ enum ToolView {
     HoursEstimator,
     DrawingsOverlay,
     Templates,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppScreen {
+    Splash,
+    Login,
+    Studio,
 }
 
 impl ToolView {
@@ -270,6 +277,11 @@ struct AutoMateApp {
     dragging_palette: Option<ObjectType>,
     active_line_start: Option<[f32; 2]>,
     is_fullscreen: bool,
+    app_screen: AppScreen,
+    splash_started_at: Instant,
+    login_username: String,
+    login_password: String,
+    login_error: Option<String>,
 }
 
 impl AutoMateApp {
@@ -286,6 +298,11 @@ impl AutoMateApp {
             dragging_palette: None,
             active_line_start: None,
             is_fullscreen: true,
+            app_screen: AppScreen::Splash,
+            splash_started_at: Instant::now(),
+            login_username: String::new(),
+            login_password: String::new(),
+            login_error: None,
         }
     }
 
@@ -367,6 +384,136 @@ impl AutoMateApp {
                 glow_radius,
                 Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 24),
             );
+    }
+
+    fn card_frame_with_alpha(alpha: u8) -> egui::Frame {
+        egui::Frame::default()
+            .fill(Color32::from_rgba_unmultiplied(255, 255, 255, alpha))
+            .stroke(egui::Stroke::new(
+                1.0,
+                Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+            ))
+            .rounding(egui::Rounding::same(8.0))
+            .inner_margin(egui::Margin::same(8.0))
+    }
+
+    fn draw_mark(&self, ui: &mut Ui) {
+        ui.vertical_centered(|ui| {
+            ui.label(RichText::new("M8").size(84.0).strong().color(
+                Color32::from_rgba_unmultiplied(
+                    self.accent().r(),
+                    self.accent().g(),
+                    self.accent().b(),
+                    150,
+                ),
+            ));
+        });
+    }
+
+    fn splash_screen(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space((ui.available_height() - 210.0).max(10.0));
+                Self::surface_panel().show(ui, |ui| {
+                    ui.set_width(460.0);
+                    self.draw_mark(ui);
+                    ui.label(
+                        RichText::new("M8 • AutoMate Technical Suite")
+                            .size(20.0)
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new("Loading secure workspace modules...")
+                            .size(14.0)
+                            .color(Color32::from_gray(190)),
+                    );
+                    ui.add_space(10.0);
+                    let pulse = ((ctx.input(|i| i.time) * 1.35).sin() * 0.5 + 0.5) as f32;
+                    ui.add(
+                        egui::ProgressBar::new(pulse)
+                            .show_percentage()
+                            .desired_width(ui.available_width() - 20.0),
+                    );
+                });
+            });
+        });
+
+        if self.splash_started_at.elapsed().as_secs_f32() > 2.2 {
+            self.app_screen = AppScreen::Login;
+        }
+    }
+
+    fn login_screen(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space((ui.available_height() - 250.0).max(10.0));
+                Self::surface_panel().show(ui, |ui| {
+                    ui.set_width(720.0);
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            self.draw_mark(ui);
+                            ui.label(
+                                RichText::new("Technical Application Login")
+                                    .size(18.0)
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new(
+                                    "Secure sign-in for BAS estimating, drawings, and controls engineering.",
+                                )
+                                .size(13.0)
+                                .color(Color32::from_gray(190)),
+                            );
+                        });
+
+                        ui.separator();
+
+                        ui.vertical(|ui| {
+                            ui.set_min_width(320.0);
+                            Self::card_frame_with_alpha(18).show(ui, |ui| {
+                                ui.label(RichText::new("Operator ID").strong());
+                                ui.text_edit_singleline(&mut self.login_username);
+                                ui.label(RichText::new("Passphrase").strong());
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.login_password)
+                                        .password(true),
+                                );
+                                ui.add_space(8.0);
+                                if ui
+                                    .add_sized(
+                                        [ui.available_width(), 30.0],
+                                        egui::Button::new(RichText::new("Authenticate").strong()),
+                                    )
+                                    .clicked()
+                                {
+                                    if self.login_username.trim().is_empty()
+                                        || self.login_password.trim().is_empty()
+                                    {
+                                        self.login_error =
+                                            Some("Enter operator ID and passphrase.".to_string());
+                                    } else {
+                                        self.login_error = None;
+                                        self.status = format!(
+                                            "Authenticated as {}",
+                                            self.login_username.trim()
+                                        );
+                                        self.app_screen = AppScreen::Studio;
+                                    }
+                                }
+                                if let Some(err) = &self.login_error {
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        RichText::new(err)
+                                            .color(Color32::from_rgb(255, 130, 130))
+                                            .size(12.0),
+                                    );
+                                }
+                            });
+                        });
+                    });
+                });
+            });
+        });
     }
 
     fn workspace_header(&mut self, ui: &mut Ui) {
@@ -1241,48 +1388,54 @@ impl App for AutoMateApp {
         );
         ctx.set_style(style);
 
-        self.titlebar(ctx);
-        egui::TopBottomPanel::top("toolbar")
-            .frame(Self::surface_panel())
-            .show(ctx, |ui| self.toolbar_dropdowns(ui));
+        match self.app_screen {
+            AppScreen::Splash => self.splash_screen(ctx),
+            AppScreen::Login => self.login_screen(ctx),
+            AppScreen::Studio => {
+                self.titlebar(ctx);
+                egui::TopBottomPanel::top("toolbar")
+                    .frame(Self::surface_panel())
+                    .show(ctx, |ui| self.toolbar_dropdowns(ui));
 
-        egui::TopBottomPanel::bottom("status")
-            .frame(Self::surface_panel())
-            .show(ctx, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(self.status.as_str());
-                    for (kind, count) in self.object_counts() {
-                        ui.label(format!("{} {}", kind.icon(), count));
-                    }
-                });
-            });
+                egui::TopBottomPanel::bottom("status")
+                    .frame(Self::surface_panel())
+                    .show(ctx, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(self.status.as_str());
+                            for (kind, count) in self.object_counts() {
+                                ui.label(format!("{} {}", kind.icon(), count));
+                            }
+                        });
+                    });
 
-        egui::SidePanel::left("objects")
-            .resizable(true)
-            .default_width(330.0)
-            .frame(Self::surface_panel())
-            .show(ctx, |ui| self.left_sidebar(ui));
+                egui::SidePanel::left("objects")
+                    .resizable(true)
+                    .default_width(330.0)
+                    .frame(Self::surface_panel())
+                    .show(ctx, |ui| self.left_sidebar(ui));
 
-        egui::SidePanel::right("properties")
-            .resizable(true)
-            .default_width(360.0)
-            .frame(Self::surface_panel())
-            .show(ctx, |ui| self.right_properties(ui));
+                egui::SidePanel::right("properties")
+                    .resizable(true)
+                    .default_width(360.0)
+                    .frame(Self::surface_panel())
+                    .show(ctx, |ui| self.right_properties(ui));
 
-        egui::CentralPanel::default()
-            .frame(Self::surface_panel().inner_margin(egui::Margin::same(18.0)))
-            .show(ctx, |ui| {
-                self.workspace_header(ui);
-                ui.separator();
-                match self.current_view {
-                    ToolView::ProjectSettings => self.project_settings_view(ui),
-                    ToolView::HoursEstimator => self.hours_estimator_view(ui),
-                    ToolView::DrawingsOverlay => self.drawings_overlay_view(ui),
-                    ToolView::Templates => self.templates_view(ui),
-                }
-            });
+                egui::CentralPanel::default()
+                    .frame(Self::surface_panel().inner_margin(egui::Margin::same(18.0)))
+                    .show(ctx, |ui| {
+                        self.workspace_header(ui);
+                        ui.separator();
+                        match self.current_view {
+                            ToolView::ProjectSettings => self.project_settings_view(ui),
+                            ToolView::HoursEstimator => self.hours_estimator_view(ui),
+                            ToolView::DrawingsOverlay => self.drawings_overlay_view(ui),
+                            ToolView::Templates => self.templates_view(ui),
+                        }
+                    });
 
-        self.dialogs(ctx);
+                self.dialogs(ctx);
+            }
+        }
         ctx.request_repaint();
     }
 }
