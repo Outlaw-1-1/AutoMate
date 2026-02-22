@@ -401,7 +401,7 @@ impl AutoMateApp {
         ui.vertical_centered(|ui| {
             ui.label(
                 RichText::new("M8")
-                    .family(FontFamily::Name("Inter".into()))
+                    .family(FontFamily::Proportional)
                     .size(84.0)
                     .strong()
                     .color(Color32::from_rgba_unmultiplied(
