@@ -344,6 +344,10 @@ struct AutoMateApp {
     overview_texture: Option<TextureHandle>,
     overlay_pdf_bytes: Option<Vec<u8>>,
     overlay_texture: Option<TextureHandle>,
+    last_autosave_at: Instant,
+    overlay_undo_stack: Vec<(Vec<OverlayNode>, Vec<OverlayLine>)>,
+    overlay_redo_stack: Vec<(Vec<OverlayNode>, Vec<OverlayLine>)>,
+    pending_overlay_drop: Option<(ObjectType, [f32; 2])>,
 }
 
 impl AutoMateApp {
@@ -369,7 +373,63 @@ impl AutoMateApp {
             overview_texture: None,
             overlay_pdf_bytes: None,
             overlay_texture: None,
+            last_autosave_at: Instant::now(),
+            overlay_undo_stack: vec![],
+            overlay_redo_stack: vec![],
+            pending_overlay_drop: None,
         }
+    }
+
+    fn estimate_hours(&self) -> (f32, f32, f32, f32) {
+        let controllers = self
+            .project
+            .objects
+            .iter()
+            .filter(|o| o.object_type == ObjectType::Controller)
+            .count() as f32;
+        let equipment_count = self
+            .project
+            .objects
+            .iter()
+            .filter(|o| o.object_type == ObjectType::Equipment)
+            .count() as f32;
+        let points = self
+            .project
+            .objects
+            .iter()
+            .filter(|o| o.object_type == ObjectType::Point)
+            .count() as f32;
+
+        let mut eng = controllers * 7.0 + points * 0.25;
+        let mut gfx = equipment_count * 1.0;
+        let mut cx = controllers * 5.5 + points * 0.12;
+
+        for eq in self
+            .project
+            .objects
+            .iter()
+            .filter(|o| o.object_type == ObjectType::Equipment)
+        {
+            if let Some(t) = self
+                .project
+                .templates
+                .iter()
+                .find(|t| t.name == eq.template_name)
+            {
+                eng += t.engineering_hours;
+                gfx += t.graphics_hours;
+                cx += t.commissioning_hours;
+            }
+        }
+
+        let custom_total = self
+            .project
+            .custom_hour_lines
+            .iter()
+            .map(|line| line.quantity.max(0.0) * line.hours_per_unit.max(0.0))
+            .sum::<f32>();
+
+        (eng, gfx, cx, custom_total)
     }
 
     fn accent(&self) -> Color32 {
@@ -879,6 +939,49 @@ impl AutoMateApp {
         self.selected_object = Some(id);
     }
 
+    fn save_project_to_path(&mut self, path: &Path) -> Result<(), String> {
+        match serde_json::to_vec_pretty(&self.project) {
+            Ok(project_payload) => {
+                let mut archive_data = Vec::new();
+                let mut zip = ZipWriter::new(Cursor::new(&mut archive_data));
+                let options = SimpleFileOptions::default();
+
+                if zip.start_file("project.json", options).is_err()
+                    || zip.write_all(&project_payload).is_err()
+                {
+                    return Err("Save failed: unable to write project.json".to_string());
+                }
+
+                if let (Some(name), Some(bytes)) =
+                    (&self.project.overview_image, &self.overview_image_bytes)
+                {
+                    if zip.start_file(format!("assets/{name}"), options).is_ok() {
+                        let _ = zip.write_all(bytes);
+                    }
+                }
+
+                if let (Some(name), Some(bytes)) =
+                    (&self.project.overlay_pdf, &self.overlay_pdf_bytes)
+                {
+                    if zip.start_file(format!("assets/{name}"), options).is_ok() {
+                        let _ = zip.write_all(bytes);
+                    }
+                }
+
+                if zip.finish().is_err() {
+                    return Err("Save failed: unable to finish archive".to_string());
+                }
+
+                Self::obfuscate(&mut archive_data);
+                fs::write(path, archive_data).map_err(|e| format!("Save failed: {e}"))?;
+                self.project_path = Some(path.to_path_buf());
+                self.last_autosave_at = Instant::now();
+                Ok(())
+            }
+            Err(e) => Err(format!("Serialization failed: {e}")),
+        }
+    }
+
     fn save_project(&mut self) {
         let path = self.project_path.clone().or_else(|| {
             FileDialog::new()
@@ -887,51 +990,98 @@ impl AutoMateApp {
                 .save_file()
         });
         if let Some(path) = path {
-            match serde_json::to_vec_pretty(&self.project) {
-                Ok(project_payload) => {
-                    let mut archive_data = Vec::new();
-                    let mut zip = ZipWriter::new(Cursor::new(&mut archive_data));
-                    let options = SimpleFileOptions::default();
-
-                    if zip.start_file("project.json", options).is_err()
-                        || zip.write_all(&project_payload).is_err()
-                    {
-                        self.status = "Save failed: unable to write project.json".to_string();
-                        return;
-                    }
-
-                    if let (Some(name), Some(bytes)) =
-                        (&self.project.overview_image, &self.overview_image_bytes)
-                    {
-                        if zip.start_file(format!("assets/{name}"), options).is_ok() {
-                            let _ = zip.write_all(bytes);
-                        }
-                    }
-
-                    if let (Some(name), Some(bytes)) =
-                        (&self.project.overlay_pdf, &self.overlay_pdf_bytes)
-                    {
-                        if zip.start_file(format!("assets/{name}"), options).is_ok() {
-                            let _ = zip.write_all(bytes);
-                        }
-                    }
-
-                    if zip.finish().is_err() {
-                        self.status = "Save failed: unable to finish archive".to_string();
-                        return;
-                    }
-
-                    Self::obfuscate(&mut archive_data);
-                    match fs::write(&path, archive_data) {
-                        Ok(_) => {
-                            self.status = format!("Saved {}", path.display());
-                            self.project_path = Some(path);
-                        }
-                        Err(e) => self.status = format!("Save failed: {e}"),
-                    }
-                }
-                Err(e) => self.status = format!("Serialization failed: {e}"),
+            match self.save_project_to_path(&path) {
+                Ok(_) => self.status = format!("Saved {}", path.display()),
+                Err(e) => self.status = e,
             }
+        }
+    }
+
+    fn autosave_project(&mut self) {
+        let interval = self.project.settings.autosave_minutes.max(1) as u64 * 60;
+        if self.last_autosave_at.elapsed().as_secs() < interval {
+            return;
+        }
+        let Some(path) = self.project_path.clone() else {
+            self.last_autosave_at = Instant::now();
+            return;
+        };
+        match self.save_project_to_path(&path) {
+            Ok(_) => self.status = format!("Autosaved {}", path.display()),
+            Err(e) => self.status = format!("Autosave failed: {e}"),
+        }
+    }
+
+    fn export_proposal_markdown(&mut self) {
+        let Some(path) = FileDialog::new()
+            .add_filter("Markdown", &["md"])
+            .set_file_name("proposal-summary.md")
+            .save_file()
+        else {
+            return;
+        };
+        let p = &self.project.proposal;
+        let (eng, gfx, cx, custom) = self.estimate_hours();
+        let total = eng + gfx + cx + custom;
+        let body = format!(
+            "# Proposal Summary\n\nProject: {}\n\n## Metadata\n- Client: {}\n- Location: {}\n- Proposal #: {}\n- Revision: {}\n- Bid Date: {}\n- Prepared By: {}\n\n## Scope\n{}\n\n## Assumptions\n{}\n\n## Exclusions\n{}\n\n## Estimated Hours\n- Engineering: {:.1} h\n- Graphics/Submittals: {:.1} h\n- Commissioning: {:.1} h\n- Custom Lines: {:.1} h\n- **Total: {:.1} h**\n",
+            self.project.name,
+            p.client_name,
+            p.project_location,
+            p.proposal_number,
+            p.revision,
+            p.bid_date,
+            p.prepared_by,
+            p.scope_summary,
+            p.assumptions,
+            p.exclusions,
+            eng,
+            gfx,
+            cx,
+            custom,
+            total
+        );
+
+        match fs::write(&path, body) {
+            Ok(_) => self.status = format!("Exported proposal {}", path.display()),
+            Err(e) => self.status = format!("Proposal export failed: {e}"),
+        }
+    }
+
+    fn push_overlay_history(&mut self) {
+        self.overlay_undo_stack.push((
+            self.project.overlay_nodes.clone(),
+            self.project.overlay_lines.clone(),
+        ));
+        if self.overlay_undo_stack.len() > 50 {
+            self.overlay_undo_stack.remove(0);
+        }
+        self.overlay_redo_stack.clear();
+    }
+
+    fn overlay_undo(&mut self) {
+        if let Some((nodes, lines)) = self.overlay_undo_stack.pop() {
+            self.overlay_redo_stack.push((
+                self.project.overlay_nodes.clone(),
+                self.project.overlay_lines.clone(),
+            ));
+            self.project.overlay_nodes = nodes;
+            self.project.overlay_lines = lines;
+            self.active_line_start = None;
+            self.status = "Overlay undo applied".to_string();
+        }
+    }
+
+    fn overlay_redo(&mut self) {
+        if let Some((nodes, lines)) = self.overlay_redo_stack.pop() {
+            self.overlay_undo_stack.push((
+                self.project.overlay_nodes.clone(),
+                self.project.overlay_lines.clone(),
+            ));
+            self.project.overlay_nodes = nodes;
+            self.project.overlay_lines = lines;
+            self.active_line_start = None;
+            self.status = "Overlay redo applied".to_string();
         }
     }
 
@@ -984,6 +1134,10 @@ impl AutoMateApp {
                                     self.status = format!("Loaded {}", path.display());
                                     self.selected_object =
                                         self.project.objects.first().map(|o| o.id);
+                                    self.last_autosave_at = Instant::now();
+                                    self.overlay_undo_stack.clear();
+                                    self.overlay_redo_stack.clear();
+                                    self.pending_overlay_drop = None;
                                 }
                                 Err(e) => self.status = format!("Parse failed: {e}"),
                             }
@@ -1060,6 +1214,10 @@ impl AutoMateApp {
                 }
                 if ui.button("Load").clicked() {
                     self.load_project(ui.ctx());
+                    ui.close_menu();
+                }
+                if ui.button("Export Proposal (Markdown)").clicked() {
+                    self.export_proposal_markdown();
                     ui.close_menu();
                 }
             });
@@ -1435,49 +1593,7 @@ impl AutoMateApp {
 
     fn hours_estimator_view(&mut self, ui: &mut Ui) {
         ui.heading("Hours Estimator");
-
-        let controllers = self
-            .project
-            .objects
-            .iter()
-            .filter(|o| o.object_type == ObjectType::Controller)
-            .count() as f32;
-        let equipment_count = self
-            .project
-            .objects
-            .iter()
-            .filter(|o| o.object_type == ObjectType::Equipment)
-            .count() as f32;
-        let points = self
-            .project
-            .objects
-            .iter()
-            .filter(|o| o.object_type == ObjectType::Point)
-            .count() as f32;
-
-        let mut eng = controllers * 7.0 + points * 0.25;
-        let mut gfx = equipment_count * 1.0;
-        let mut cx = controllers * 5.5 + points * 0.12;
-
-        for eq in self
-            .project
-            .objects
-            .iter()
-            .filter(|o| o.object_type == ObjectType::Equipment)
-        {
-            if let Some(t) = self
-                .project
-                .templates
-                .iter()
-                .find(|t| t.name == eq.template_name)
-            {
-                eng += t.engineering_hours;
-                gfx += t.graphics_hours;
-                cx += t.commissioning_hours;
-            }
-        }
-
-        let mut custom_total = 0.0;
+        let (eng, gfx, cx, mut custom_total) = self.estimate_hours();
         Self::card_frame().show(ui, |ui| {
             ui.label(RichText::new("System-derived hours").strong());
             egui::Grid::new("est_grid").show(ui, |ui| {
@@ -1535,6 +1651,12 @@ impl AutoMateApp {
         });
 
         Self::card_frame().show(ui, |ui| {
+            custom_total = self
+                .project
+                .custom_hour_lines
+                .iter()
+                .map(|line| line.quantity.max(0.0) * line.hours_per_unit.max(0.0))
+                .sum::<f32>();
             let total = eng + gfx + cx + custom_total;
             ui.label(RichText::new(format!("Total Estimated Hours: {total:.1} h")).strong());
             ui.small("No dollar estimates are shown by design.");
@@ -1663,6 +1785,12 @@ impl AutoMateApp {
             if ui.button("Equipment token").drag_started() {
                 self.dragging_palette = Some(ObjectType::Equipment);
             }
+            if ui.button("↶ Undo").clicked() {
+                self.overlay_undo();
+            }
+            if ui.button("↷ Redo").clicked() {
+                self.overlay_redo();
+            }
         });
 
         let desired = egui::vec2(ui.available_width(), ui.available_height() - 16.0);
@@ -1756,24 +1884,14 @@ impl AutoMateApp {
             if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
                 if ui.input(|i| i.pointer.any_released()) {
                     if let Some(kind) = self.dragging_palette.take() {
-                        if let Some(object_id) = self
-                            .project
-                            .objects
-                            .iter()
-                            .find(|o| o.object_type == kind)
-                            .map(|o| o.id)
-                        {
-                            self.project.overlay_nodes.push(OverlayNode {
-                                id: self.project.next_id,
-                                object_id,
-                                x: pointer.x - resp.rect.left(),
-                                y: pointer.y - resp.rect.top(),
-                            });
-                            self.project.next_id += 1;
-                        }
+                        self.pending_overlay_drop = Some((
+                            kind,
+                            [pointer.x - resp.rect.left(), pointer.y - resp.rect.top()],
+                        ));
                     } else if resp.clicked() {
                         let local = [pointer.x - resp.rect.left(), pointer.y - resp.rect.top()];
                         if let Some(start) = self.active_line_start.take() {
+                            self.push_overlay_history();
                             self.project.overlay_lines.push(OverlayLine {
                                 from: start,
                                 to: local,
@@ -1783,6 +1901,57 @@ impl AutoMateApp {
                         }
                     }
                 }
+            }
+        }
+
+        if let Some((kind, pos)) = self.pending_overlay_drop.clone() {
+            let mut open = true;
+            egui::Window::new("Bind Token to Object")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label("Choose which object to place on the overlay.");
+                    let candidates: Vec<(u64, String)> = self
+                        .project
+                        .objects
+                        .iter()
+                        .filter(|o| o.object_type == kind)
+                        .map(|o| (o.id, o.name.clone()))
+                        .collect();
+
+                    if candidates.is_empty() {
+                        ui.label("No matching objects found.");
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .max_height(220.0)
+                            .show(ui, |ui| {
+                                for (id, name) in candidates {
+                                    if ui.button(name).clicked() {
+                                        self.push_overlay_history();
+                                        self.project.overlay_nodes.push(OverlayNode {
+                                            id: self.project.next_id,
+                                            object_id: id,
+                                            x: pos[0],
+                                            y: pos[1],
+                                        });
+                                        self.project.next_id += 1;
+                                        self.pending_overlay_drop = None;
+                                        self.status = "Placed overlay token".to_string();
+                                    }
+                                }
+                            });
+                    }
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            self.pending_overlay_drop = None;
+                        }
+                    });
+                });
+
+            if !open {
+                self.pending_overlay_drop = None;
             }
         }
     }
@@ -1907,6 +2076,7 @@ impl App for AutoMateApp {
             AppScreen::Login => self.login_screen(ctx),
             AppScreen::Studio => {
                 self.ensure_template_seeded();
+                self.autosave_project();
                 self.titlebar(ctx, _frame);
                 egui::TopBottomPanel::top("toolbar")
                     .frame(Self::surface_panel())
