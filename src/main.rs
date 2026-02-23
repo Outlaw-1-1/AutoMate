@@ -1,5 +1,5 @@
 use eframe::{
-    egui::{self, menu, Color32, FontFamily, FontId, RichText, Sense, TextureHandle, Ui},
+    egui::{self, menu, Align2, Color32, FontFamily, FontId, RichText, Sense, TextureHandle, Ui},
     epaint::{Mesh, Shadow, Vertex},
     App, CreationContext, Frame, NativeOptions,
 };
@@ -220,14 +220,30 @@ impl Default for EstimatorSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+enum HourCalculationMode {
+    StaticByEquipment,
+    PointsBased,
+}
+
+impl Default for HourCalculationMode {
+    fn default() -> Self {
+        Self::StaticByEquipment
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EquipmentTemplate {
     name: String,
     equipment_type: String,
     points: Vec<String>,
+    hour_mode: HourCalculationMode,
     engineering_hours: f32,
+    engineering_hours_per_point: f32,
     graphics_hours: f32,
+    graphics_hours_per_point: f32,
     commissioning_hours: f32,
+    commissioning_hours_per_point: f32,
 }
 
 impl Default for EquipmentTemplate {
@@ -241,9 +257,13 @@ impl Default for EquipmentTemplate {
                 "Damper Cmd".to_string(),
                 "Airflow".to_string(),
             ],
+            hour_mode: HourCalculationMode::StaticByEquipment,
             engineering_hours: 2.0,
+            engineering_hours_per_point: 0.25,
             graphics_hours: 1.0,
+            graphics_hours_per_point: 0.12,
             commissioning_hours: 1.5,
+            commissioning_hours_per_point: 0.18,
         }
     }
 }
@@ -283,19 +303,7 @@ impl Default for Project {
             controller_type: String::new(),
             controller_license: String::new(),
             template_name: String::new(),
-            property_groups: vec![PropertyGroup {
-                name: "General".to_string(),
-                items: vec![
-                    PropertyItem {
-                        key: "Address".to_string(),
-                        value: "100 Main St".to_string(),
-                    },
-                    PropertyItem {
-                        key: "Square Footage".to_string(),
-                        value: "125000".to_string(),
-                    },
-                ],
-            }],
+            property_groups: vec![],
         };
 
         Self {
@@ -312,42 +320,57 @@ impl Default for Project {
                     name: "AHU Typical".to_string(),
                     equipment_type: "AHU".to_string(),
                     points: vec![
+                        "Space Temp".to_string(),
                         "Supply Temp".to_string(),
                         "Return Temp".to_string(),
                         "Static Pressure".to_string(),
                         "Fan Cmd".to_string(),
                         "Filter DP".to_string(),
                     ],
+                    hour_mode: HourCalculationMode::StaticByEquipment,
                     engineering_hours: 5.0,
+                    engineering_hours_per_point: 0.3,
                     graphics_hours: 2.0,
+                    graphics_hours_per_point: 0.15,
                     commissioning_hours: 3.0,
+                    commissioning_hours_per_point: 0.2,
                 },
                 EquipmentTemplate {
                     name: "Boiler Plant".to_string(),
                     equipment_type: "Boiler".to_string(),
                     points: vec![
+                        "Space Temp".to_string(),
                         "Enable".to_string(),
                         "Water Temp".to_string(),
                         "Status".to_string(),
                         "Alarm".to_string(),
                     ],
+                    hour_mode: HourCalculationMode::StaticByEquipment,
                     engineering_hours: 4.0,
+                    engineering_hours_per_point: 0.3,
                     graphics_hours: 1.5,
+                    graphics_hours_per_point: 0.15,
                     commissioning_hours: 2.5,
+                    commissioning_hours_per_point: 0.2,
                 },
                 EquipmentTemplate {
                     name: "Chiller".to_string(),
                     equipment_type: "Chiller".to_string(),
                     points: vec![
+                        "Space Temp".to_string(),
                         "CHWS Temp".to_string(),
                         "CHWR Temp".to_string(),
                         "Run Cmd".to_string(),
                         "kW".to_string(),
                         "Fault".to_string(),
                     ],
+                    hour_mode: HourCalculationMode::StaticByEquipment,
                     engineering_hours: 5.0,
+                    engineering_hours_per_point: 0.3,
                     graphics_hours: 2.0,
+                    graphics_hours_per_point: 0.15,
                     commissioning_hours: 3.0,
+                    commissioning_hours_per_point: 0.2,
                 },
             ],
             custom_hour_lines: vec![],
@@ -383,6 +406,8 @@ struct AutoMateApp {
     overlay_undo_stack: Vec<(Vec<OverlayNode>, Vec<OverlayLine>)>,
     overlay_redo_stack: Vec<(Vec<OverlayNode>, Vec<OverlayLine>)>,
     pending_overlay_drop: Option<(ObjectType, [f32; 2])>,
+    show_adjustment_popup: bool,
+    left_sidebar_collapsed: bool,
 }
 
 impl AutoMateApp {
@@ -412,6 +437,8 @@ impl AutoMateApp {
             overlay_undo_stack: vec![],
             overlay_redo_stack: vec![],
             pending_overlay_drop: None,
+            show_adjustment_popup: false,
+            left_sidebar_collapsed: false,
         }
     }
 
@@ -451,9 +478,24 @@ impl AutoMateApp {
                 .iter()
                 .find(|t| t.name == eq.template_name)
             {
-                eng += t.engineering_hours;
-                gfx += t.graphics_hours;
-                cx += t.commissioning_hours;
+                let eq_points = self
+                    .project
+                    .objects
+                    .iter()
+                    .filter(|o| o.parent_id == Some(eq.id) && o.object_type == ObjectType::Point)
+                    .count() as f32;
+                match t.hour_mode {
+                    HourCalculationMode::StaticByEquipment => {
+                        eng += t.engineering_hours;
+                        gfx += t.graphics_hours;
+                        cx += t.commissioning_hours;
+                    }
+                    HourCalculationMode::PointsBased => {
+                        eng += eq_points * t.engineering_hours_per_point;
+                        gfx += eq_points * t.graphics_hours_per_point;
+                        cx += eq_points * t.commissioning_hours_per_point;
+                    }
+                }
             }
         }
 
@@ -568,25 +610,23 @@ impl AutoMateApp {
         ctx.layer_painter(egui::LayerId::background())
             .add(egui::Shape::mesh(mesh));
 
-        let glow_radius = rect.width().min(rect.height()) * 0.7;
-        let glow_center = egui::pos2(
-            rect.right() - glow_radius * 0.32,
-            rect.top() + glow_radius * 0.35,
+        let painter = ctx.layer_painter(egui::LayerId::background());
+        let primary = egui::pos2(rect.right() - 240.0, rect.top() + 220.0);
+        painter.text(
+            primary,
+            Align2::CENTER_CENTER,
+            "M8",
+            FontId::proportional(280.0),
+            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 18),
         );
-        ctx.layer_painter(egui::LayerId::background())
-            .circle_filled(
-                glow_center,
-                glow_radius,
-                Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 24),
-            );
-
-        let secondary_glow_center = egui::pos2(rect.left() + glow_radius * 0.3, rect.bottom());
-        ctx.layer_painter(egui::LayerId::background())
-            .circle_filled(
-                secondary_glow_center,
-                glow_radius * 0.7,
-                Color32::from_rgba_unmultiplied(76, 129, 255, 18),
-            );
+        let secondary = egui::pos2(rect.left() + 200.0, rect.bottom() - 160.0);
+        painter.text(
+            secondary,
+            Align2::CENTER_CENTER,
+            "M8",
+            FontId::proportional(220.0),
+            Color32::from_rgba_unmultiplied(76, 129, 255, 14),
+        );
     }
 
     fn card_frame_with_alpha(alpha: u8) -> egui::Frame {
@@ -748,22 +788,26 @@ impl AutoMateApp {
                 format!("{} (Hours)", name)
             },
             equipment_type: "Custom".to_string(),
-            points: vec!["Template Point".to_string()],
+            points: vec!["Space Temp".to_string(), "Template Point".to_string()],
+            hour_mode: HourCalculationMode::StaticByEquipment,
             engineering_hours: if line.category == "Engineering" {
                 line.quantity.max(0.0) * line.hours_per_unit.max(0.0)
             } else {
                 0.0
             },
+            engineering_hours_per_point: 0.0,
             graphics_hours: if line.category == "Graphics" {
                 line.quantity.max(0.0) * line.hours_per_unit.max(0.0)
             } else {
                 0.0
             },
+            graphics_hours_per_point: 0.0,
             commissioning_hours: if line.category == "Commissioning" {
                 line.quantity.max(0.0) * line.hours_per_unit.max(0.0)
             } else {
                 0.0
             },
+            commissioning_hours_per_point: 0.0,
         }
     }
 
@@ -774,55 +818,75 @@ impl AutoMateApp {
                 name: "AHU Typical".to_string(),
                 equipment_type: "AHU".to_string(),
                 points: vec![
+                    "Space Temp".to_string(),
                     "Supply Temp".into(),
                     "Return Temp".into(),
                     "Static Pressure".into(),
                     "Fan Cmd".into(),
                     "Filter DP".into(),
                 ],
+                hour_mode: HourCalculationMode::StaticByEquipment,
                 engineering_hours: 5.0,
+                engineering_hours_per_point: 0.3,
                 graphics_hours: 2.0,
+                graphics_hours_per_point: 0.15,
                 commissioning_hours: 3.0,
+                commissioning_hours_per_point: 0.2,
             },
             EquipmentTemplate {
                 name: "Boiler Plant".to_string(),
                 equipment_type: "Boiler".to_string(),
                 points: vec![
+                    "Space Temp".to_string(),
                     "Enable".into(),
                     "Water Temp".into(),
                     "Status".into(),
                     "Alarm".into(),
                 ],
+                hour_mode: HourCalculationMode::StaticByEquipment,
                 engineering_hours: 4.0,
+                engineering_hours_per_point: 0.3,
                 graphics_hours: 1.5,
+                graphics_hours_per_point: 0.15,
                 commissioning_hours: 2.5,
+                commissioning_hours_per_point: 0.2,
             },
             EquipmentTemplate {
                 name: "Chiller".to_string(),
                 equipment_type: "Chiller".to_string(),
                 points: vec![
+                    "Space Temp".to_string(),
                     "CHWS Temp".into(),
                     "CHWR Temp".into(),
                     "Run Cmd".into(),
                     "kW".into(),
                     "Fault".into(),
                 ],
+                hour_mode: HourCalculationMode::StaticByEquipment,
                 engineering_hours: 5.0,
+                engineering_hours_per_point: 0.3,
                 graphics_hours: 2.0,
+                graphics_hours_per_point: 0.15,
                 commissioning_hours: 3.0,
+                commissioning_hours_per_point: 0.2,
             },
             EquipmentTemplate {
                 name: "Fan Coil Unit".to_string(),
                 equipment_type: "FCU".to_string(),
                 points: vec![
+                    "Space Temp".to_string(),
                     "Room Temp".into(),
                     "Fan Speed".into(),
                     "Valve Cmd".into(),
                     "Occupancy".into(),
                 ],
+                hour_mode: HourCalculationMode::StaticByEquipment,
                 engineering_hours: 2.5,
+                engineering_hours_per_point: 0.25,
                 graphics_hours: 1.0,
+                graphics_hours_per_point: 0.12,
                 commissioning_hours: 1.5,
+                commissioning_hours_per_point: 0.18,
             },
         ]
     }
@@ -1015,10 +1079,14 @@ impl AutoMateApp {
             controller_type: "Lynxspring Edge".to_string(),
             controller_license: "None".to_string(),
             template_name: String::new(),
-            property_groups: vec![PropertyGroup {
-                name: "General".to_string(),
-                items: vec![],
-            }],
+            property_groups: if object_type == ObjectType::Equipment {
+                vec![PropertyGroup {
+                    name: "General".to_string(),
+                    items: vec![],
+                }]
+            } else {
+                vec![]
+            },
         });
         self.selected_object = Some(id);
     }
@@ -1384,37 +1452,69 @@ impl AutoMateApp {
         });
     }
 
+    fn labeled_singleline(ui: &mut Ui, label: &str, value: &mut String) {
+        ui.horizontal(|ui| {
+            ui.set_width(ui.available_width());
+            ui.label(label);
+            ui.add_sized(
+                [ui.available_width(), 24.0],
+                egui::TextEdit::singleline(value),
+            );
+        });
+    }
+
+    fn sync_template_points(&mut self) {
+        let equipment: Vec<(u64, String)> = self
+            .project
+            .objects
+            .iter()
+            .filter(|o| o.object_type == ObjectType::Equipment && !o.template_name.is_empty())
+            .map(|o| (o.id, o.template_name.clone()))
+            .collect();
+        for (eq_id, template_name) in equipment {
+            let Some(template) = self
+                .project
+                .templates
+                .iter()
+                .find(|t| t.name == template_name)
+                .cloned()
+            else {
+                continue;
+            };
+            let existing: BTreeSet<String> = self
+                .project
+                .objects
+                .iter()
+                .filter(|o| o.parent_id == Some(eq_id) && o.object_type == ObjectType::Point)
+                .map(|o| o.name.clone())
+                .collect();
+            for point_name in template.points {
+                if existing.contains(&point_name) {
+                    continue;
+                }
+                self.add_object(ObjectType::Point, Some(eq_id));
+                if let Some(new_obj) = self.project.objects.last_mut() {
+                    new_obj.name = point_name;
+                    new_obj.property_groups.clear();
+                }
+            }
+        }
+    }
+
+    fn duplicate_object(&mut self, id: u64) {
+        let Some(obj) = self.project.objects.iter().find(|o| o.id == id).cloned() else {
+            return;
+        };
+        let mut copy = obj;
+        copy.id = self.project.next_id;
+        self.project.next_id += 1;
+        copy.name = format!("{} Copy", copy.name);
+        self.project.objects.push(copy);
+        self.selected_object = Some(self.project.next_id - 1);
+    }
+
     fn project_overview(&mut self, ui: &mut Ui) {
         Self::card_frame().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("🖼 Upload Overview Image").clicked() {
-                    if let Some(path) = FileDialog::new()
-                        .add_filter("Images", &["png", "jpg", "jpeg", "bmp"])
-                        .pick_file()
-                    {
-                        match fs::read(&path) {
-                            Ok(bytes) => {
-                                self.project.overview_image =
-                                    Some(Self::sanitize_asset_name(&path));
-                                self.overview_image_bytes = Some(bytes);
-                                self.refresh_overview_texture(ui.ctx());
-                                self.status = "Loaded overview image".to_string();
-                            }
-                            Err(err) => self.status = format!("Image load failed: {err}"),
-                        }
-                    }
-                }
-                if let Some(path) = &self.project.overview_image {
-                    ui.small(path);
-                }
-            });
-            ui.separator();
-            if let Some(texture) = &self.overview_texture {
-                let w = ui.available_width().max(120.0);
-                let h = (w * 0.56).clamp(90.0, 220.0);
-                ui.add(egui::Image::new(texture).fit_to_exact_size(egui::vec2(w, h)));
-                ui.separator();
-            }
             ui.label(RichText::new("Project Overview").strong());
             ui.label(format!("Client: {}", self.project.proposal.client_name));
             ui.label(format!(
@@ -1430,6 +1530,22 @@ impl AutoMateApp {
     }
 
     fn left_sidebar(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            if ui
+                .button(if self.left_sidebar_collapsed {
+                    "⮞"
+                } else {
+                    "⮜"
+                })
+                .clicked()
+            {
+                self.left_sidebar_collapsed = !self.left_sidebar_collapsed;
+            }
+            ui.label(RichText::new("Object Tree").strong());
+        });
+        if self.left_sidebar_collapsed {
+            return;
+        }
         self.project_overview(ui);
         ui.add_space(8.0);
         if ui.button("➕ Building").clicked() {
@@ -1455,50 +1571,96 @@ impl AutoMateApp {
         let obj = self.project.objects.iter().find(|o| o.id == id).cloned();
         let Some(obj) = obj else { return };
 
-        Self::card_frame().show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            let selected = self.selected_object == Some(id);
-            let title = format!("{} {}", obj.object_type.icon(), obj.name);
-            let text = if selected {
-                RichText::new(title).color(Color32::WHITE)
-            } else {
-                RichText::new(title).color(Color32::from_rgb(230, 235, 245))
-            };
-            if ui.selectable_label(selected, text).clicked() {
-                self.selected_object = Some(id);
-            }
+        let mut add_child = None;
+        let mut delete_clicked = false;
+        let mut duplicate_clicked = false;
 
+        let selected = self.selected_object == Some(id);
+        let title = format!("{} {}", obj.object_type.icon(), obj.name);
+        let text = if selected {
+            RichText::new(title).color(Color32::WHITE)
+        } else {
+            RichText::new(title).color(Color32::from_rgb(230, 235, 245))
+        };
+
+        let row = ui.selectable_label(selected, text);
+        if row.clicked() {
+            self.selected_object = Some(id);
+        }
+        row.context_menu(|ui| {
+            if ui.button("Duplicate").clicked() {
+                duplicate_clicked = true;
+                ui.close_menu();
+            }
+            if ui.button("Delete").clicked() {
+                delete_clicked = true;
+                ui.close_menu();
+            }
+            match obj.object_type {
+                ObjectType::Building => {
+                    if ui.button("Add Controller").clicked() {
+                        add_child = Some(ObjectType::Controller);
+                        ui.close_menu();
+                    }
+                }
+                ObjectType::Controller => {
+                    if ui.button("Add Equipment").clicked() {
+                        add_child = Some(ObjectType::Equipment);
+                        ui.close_menu();
+                    }
+                }
+                ObjectType::Equipment => {
+                    if ui.button("Add Point").clicked() {
+                        add_child = Some(ObjectType::Point);
+                        ui.close_menu();
+                    }
+                }
+                ObjectType::Point => {}
+            }
+        });
+
+        if obj.object_type != ObjectType::Point {
             ui.horizontal_wrapped(|ui| match obj.object_type {
                 ObjectType::Building => {
                     if ui.button("+ Controller").clicked() {
-                        self.add_object(ObjectType::Controller, Some(id))
+                        add_child = Some(ObjectType::Controller);
                     }
                 }
                 ObjectType::Controller => {
                     if ui.button("+ Equipment").clicked() {
-                        self.add_object(ObjectType::Equipment, Some(id))
+                        add_child = Some(ObjectType::Equipment);
                     }
                 }
                 ObjectType::Equipment => {
                     if ui.button("+ Point").clicked() {
-                        self.add_object(ObjectType::Point, Some(id))
+                        add_child = Some(ObjectType::Point);
                     }
                 }
                 ObjectType::Point => {}
             });
+        }
 
-            let children: Vec<u64> = self
-                .project
-                .objects
-                .iter()
-                .filter(|child| child.parent_id == Some(id))
-                .map(|child| child.id)
-                .collect();
+        if let Some(kind) = add_child {
+            self.add_object(kind, Some(id));
+        }
+        if duplicate_clicked {
+            self.duplicate_object(id);
+        }
+        if delete_clicked && obj.object_type != ObjectType::Building {
+            self.remove_object_subtree(id);
+        }
 
-            for child in children {
-                ui.indent(("child", child), |ui| self.object_node(ui, child));
-            }
-        });
+        let children: Vec<u64> = self
+            .project
+            .objects
+            .iter()
+            .filter(|child| child.parent_id == Some(id))
+            .map(|child| child.id)
+            .collect();
+
+        for child in children {
+            ui.indent(("child", child), |ui| self.object_node(ui, child));
+        }
     }
 
     fn apply_template_to_selected_equipment(&mut self) {
@@ -1525,6 +1687,14 @@ impl AutoMateApp {
             .find(|t| t.name == eq.template_name)
             .cloned()
         {
+            if let Some(eq_obj) = self.project.objects.iter_mut().find(|o| o.id == obj_id) {
+                if eq_obj.equipment_type.trim().is_empty() {
+                    eq_obj.equipment_type = template.equipment_type.clone();
+                }
+                if eq_obj.equipment_tag.trim().is_empty() {
+                    eq_obj.equipment_tag = format!("{}-{}", template.equipment_type, obj_id);
+                }
+            }
             let existing_points: Vec<String> = self
                 .project
                 .objects
@@ -1540,6 +1710,7 @@ impl AutoMateApp {
                 self.add_object(ObjectType::Point, Some(obj_id));
                 if let Some(new_obj) = self.project.objects.last_mut() {
                     new_obj.name = point_name;
+                    new_obj.property_groups.clear();
                 }
             }
         }
@@ -1655,30 +1826,32 @@ impl AutoMateApp {
                         }
                     }
 
-                    ui.separator();
-                    for group in &mut obj.property_groups {
-                        egui::CollapsingHeader::new(group.name.as_str())
-                            .default_open(true)
-                            .show(ui, |ui| {
-                                for item in &mut group.items {
-                                    ui.horizontal(|ui| {
-                                        ui.label(item.key.as_str());
-                                        ui.text_edit_singleline(&mut item.value);
-                                    });
-                                }
-                                if ui.button("+ Property").clicked() {
-                                    group.items.push(PropertyItem {
-                                        key: "New".to_string(),
-                                        value: String::new(),
-                                    });
-                                }
+                    if obj.object_type == ObjectType::Equipment {
+                        ui.separator();
+                        for group in &mut obj.property_groups {
+                            egui::CollapsingHeader::new(group.name.as_str())
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    for item in &mut group.items {
+                                        ui.horizontal(|ui| {
+                                            ui.label(item.key.as_str());
+                                            ui.text_edit_singleline(&mut item.value);
+                                        });
+                                    }
+                                    if ui.button("+ Property").clicked() {
+                                        group.items.push(PropertyItem {
+                                            key: "New".to_string(),
+                                            value: String::new(),
+                                        });
+                                    }
+                                });
+                        }
+                        if ui.button("+ Group").clicked() {
+                            obj.property_groups.push(PropertyGroup {
+                                name: format!("Group {}", obj.property_groups.len() + 1),
+                                items: vec![],
                             });
-                    }
-                    if ui.button("+ Group").clicked() {
-                        obj.property_groups.push(PropertyGroup {
-                            name: format!("Group {}", obj.property_groups.len() + 1),
-                            items: vec![],
-                        });
+                        }
                     }
                 });
 
@@ -1703,10 +1876,39 @@ impl AutoMateApp {
             ui.columns(3, |columns| {
                 Self::card_frame().show(&mut columns[0], |ui| {
                     ui.label(RichText::new("Project Core").strong());
-                    ui.label("Project Name");
-                    ui.text_edit_singleline(&mut self.project.name);
-                    ui.label("Project #");
-                    ui.text_edit_singleline(&mut self.project.proposal.project_number);
+                    Self::labeled_singleline(ui, "Project Name", &mut self.project.name);
+                    Self::labeled_singleline(
+                        ui,
+                        "Project #",
+                        &mut self.project.proposal.project_number,
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("🖼 Upload Overview Image").clicked() {
+                            if let Some(path) = FileDialog::new()
+                                .add_filter("Images", &["png", "jpg", "jpeg", "bmp"])
+                                .pick_file()
+                            {
+                                match fs::read(&path) {
+                                    Ok(bytes) => {
+                                        self.project.overview_image =
+                                            Some(Self::sanitize_asset_name(&path));
+                                        self.overview_image_bytes = Some(bytes);
+                                        self.refresh_overview_texture(ui.ctx());
+                                        self.status = "Loaded overview image".to_string();
+                                    }
+                                    Err(err) => self.status = format!("Image load failed: {err}"),
+                                }
+                            }
+                        }
+                        if let Some(path) = &self.project.overview_image {
+                            ui.small(path);
+                        }
+                    });
+                    if let Some(texture) = &self.overview_texture {
+                        let w = ui.available_width().max(120.0);
+                        let h = (w * 0.42).clamp(90.0, 180.0);
+                        ui.add(egui::Image::new(texture).fit_to_exact_size(egui::vec2(w, h)));
+                    }
                     ui.label("Project Notes");
                     ui.text_edit_multiline(&mut self.project.notes);
                 });
@@ -1714,67 +1916,25 @@ impl AutoMateApp {
                 Self::card_frame().show(&mut columns[1], |ui| {
                     ui.label(RichText::new("Stakeholders").strong());
                     let p = &mut self.project.proposal;
-                    ui.horizontal(|ui| {
-                        ui.label("Client");
-                        ui.text_edit_singleline(&mut p.client_name);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Owner");
-                        ui.text_edit_singleline(&mut p.owner);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Engineer");
-                        ui.text_edit_singleline(&mut p.engineer_of_record);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("PM");
-                        ui.text_edit_singleline(&mut p.project_manager);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Estimator");
-                        ui.text_edit_singleline(&mut p.estimator);
-                    });
+                    Self::labeled_singleline(ui, "Client", &mut p.client_name);
+                    Self::labeled_singleline(ui, "Owner", &mut p.owner);
+                    Self::labeled_singleline(ui, "Engineer", &mut p.engineer_of_record);
+                    Self::labeled_singleline(ui, "PM", &mut p.project_manager);
+                    Self::labeled_singleline(ui, "Estimator", &mut p.estimator);
                 });
 
                 Self::card_frame().show(&mut columns[2], |ui| {
                     ui.label(RichText::new("Commercial & Schedule").strong());
                     let p = &mut self.project.proposal;
-                    ui.horizontal(|ui| {
-                        ui.label("Location");
-                        ui.text_edit_singleline(&mut p.project_location);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Proposal #");
-                        ui.text_edit_singleline(&mut p.proposal_number);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Revision");
-                        ui.text_edit_singleline(&mut p.revision);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Contract");
-                        ui.text_edit_singleline(&mut p.contract_type);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Design Stage");
-                        ui.text_edit_singleline(&mut p.design_stage);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Bid Date");
-                        ui.text_edit_singleline(&mut p.bid_date);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Start");
-                        ui.text_edit_singleline(&mut p.target_start_date);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Completion");
-                        ui.text_edit_singleline(&mut p.target_completion_date);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Prepared By");
-                        ui.text_edit_singleline(&mut p.prepared_by);
-                    });
+                    Self::labeled_singleline(ui, "Location", &mut p.project_location);
+                    Self::labeled_singleline(ui, "Proposal #", &mut p.proposal_number);
+                    Self::labeled_singleline(ui, "Revision", &mut p.revision);
+                    Self::labeled_singleline(ui, "Contract", &mut p.contract_type);
+                    Self::labeled_singleline(ui, "Design Stage", &mut p.design_stage);
+                    Self::labeled_singleline(ui, "Bid Date", &mut p.bid_date);
+                    Self::labeled_singleline(ui, "Start", &mut p.target_start_date);
+                    Self::labeled_singleline(ui, "Completion", &mut p.target_completion_date);
+                    Self::labeled_singleline(ui, "Prepared By", &mut p.prepared_by);
                 });
             });
 
@@ -1801,7 +1961,12 @@ impl AutoMateApp {
         let (eng, gfx, cx, mut custom_total, overhead, grand_total) = self.estimate_hours();
 
         Self::card_frame().show(ui, |ui| {
-            ui.label(RichText::new("System-derived hours").strong());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Hours Summation").strong());
+                if ui.button("⏰").on_hover_text("Adjustments").clicked() {
+                    self.show_adjustment_popup = true;
+                }
+            });
             egui::Grid::new("est_grid").num_columns(2).show(ui, |ui| {
                 ui.label("Engineering");
                 ui.label(format!("{eng:.1} h"));
@@ -1812,102 +1977,122 @@ impl AutoMateApp {
                 ui.label("Commissioning");
                 ui.label(format!("{cx:.1} h"));
                 ui.end_row();
+                ui.label("Custom Lines");
+                ui.label(format!("{custom_total:.1} h"));
+                ui.end_row();
             });
         });
 
-        Self::card_frame().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Adjustment model").strong());
-                if ui.button("Apply Recommended").clicked() {
-                    self.apply_recommended_settings();
-                }
-            });
-            ui.columns(3, |columns| {
-                columns[0].add(
-                    egui::Slider::new(&mut self.project.estimator.complexity_factor, 0.8..=1.6)
-                        .text("Complexity"),
-                );
-                columns[1].add(
-                    egui::Slider::new(&mut self.project.estimator.renovation_factor, 0.9..=1.5)
-                        .text("Renovation"),
-                );
-                columns[2].add(
-                    egui::Slider::new(&mut self.project.estimator.integration_factor, 0.8..=1.4)
-                        .text("Integrations"),
-                );
-            });
-            ui.columns(3, |columns| {
-                columns[0].add(
-                    egui::Slider::new(&mut self.project.estimator.qa_percent, 0.0..=20.0)
-                        .text("QA %"),
-                );
-                columns[1].add(
-                    egui::Slider::new(
-                        &mut self.project.estimator.project_management_percent,
-                        0.0..=25.0,
-                    )
-                    .text("PM %"),
-                );
-                columns[2].add(
-                    egui::Slider::new(&mut self.project.estimator.risk_percent, 0.0..=20.0)
-                        .text("Risk %"),
-                );
-            });
-        });
+        if self.show_adjustment_popup {
+            egui::Window::new("Hours Adjustments")
+                .open(&mut self.show_adjustment_popup)
+                .collapsible(false)
+                .resizable(true)
+                .show(ui.ctx(), |ui| {
+                    ui.columns(3, |columns| {
+                        columns[0].add(
+                            egui::Slider::new(
+                                &mut self.project.estimator.complexity_factor,
+                                0.8..=1.6,
+                            )
+                            .text("Complexity"),
+                        );
+                        columns[1].add(
+                            egui::Slider::new(
+                                &mut self.project.estimator.renovation_factor,
+                                0.9..=1.5,
+                            )
+                            .text("Renovation"),
+                        );
+                        columns[2].add(
+                            egui::Slider::new(
+                                &mut self.project.estimator.integration_factor,
+                                0.8..=1.4,
+                            )
+                            .text("Integrations"),
+                        );
+                    });
+                    ui.columns(3, |columns| {
+                        columns[0].add(
+                            egui::Slider::new(&mut self.project.estimator.qa_percent, 0.0..=20.0)
+                                .text("QA %"),
+                        );
+                        columns[1].add(
+                            egui::Slider::new(
+                                &mut self.project.estimator.project_management_percent,
+                                0.0..=25.0,
+                            )
+                            .text("PM %"),
+                        );
+                        columns[2].add(
+                            egui::Slider::new(&mut self.project.estimator.risk_percent, 0.0..=20.0)
+                                .text("Risk %"),
+                        );
+                    });
+                });
+        }
 
-        Self::card_frame().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Custom hour lines").strong());
-                if ui.button("+ Add line").clicked() {
-                    self.project.custom_hour_lines.push(HourLine::default());
-                }
-            });
-
-            let mut remove_idx = None;
-            for (idx, line) in self.project.custom_hour_lines.iter_mut().enumerate() {
-                ui.separator();
+        ui.columns(3, |columns| {
+            Self::card_frame().show(&mut columns[0], |ui| {
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut line.name);
-                    egui::ComboBox::from_id_source(("cat", idx))
-                        .selected_text(&line.category)
-                        .show_ui(ui, |ui| {
-                            for c in ["Engineering", "Graphics", "Commissioning", "Other"] {
-                                ui.selectable_value(&mut line.category, c.to_string(), c);
-                            }
-                        });
-                    ui.add(
-                        egui::DragValue::new(&mut line.quantity)
-                            .speed(0.1)
-                            .prefix("Qty "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut line.hours_per_unit)
-                            .speed(0.1)
-                            .prefix("h/u "),
-                    );
-                    if ui.button("🗑").clicked() {
-                        remove_idx = Some(idx);
+                    ui.label(RichText::new("Custom hour lines").strong());
+                    if ui.button("+ Add line").clicked() {
+                        self.project.custom_hour_lines.push(HourLine::default());
                     }
                 });
-                custom_total += line.quantity.max(0.0) * line.hours_per_unit.max(0.0);
-            }
-            if let Some(idx) = remove_idx {
-                self.project.custom_hour_lines.remove(idx);
-            }
-        });
 
-        Self::card_frame().show(ui, |ui| {
-            custom_total = self
-                .project
-                .custom_hour_lines
-                .iter()
-                .map(|line| line.quantity.max(0.0) * line.hours_per_unit.max(0.0))
-                .sum::<f32>();
-            let base_total = eng + gfx + cx + custom_total;
-            ui.label(RichText::new(format!("Base Total: {base_total:.1} h")).strong());
-            ui.label(format!("Overhead & Risk: {overhead:.1} h"));
-            ui.label(RichText::new(format!("Final Estimated Hours: {grand_total:.1} h")).strong());
-            ui.small("Calibrated model: direct effort + complexity factors + QA/PM/risk overhead.");
+                let mut remove_idx = None;
+                for (idx, line) in self.project.custom_hour_lines.iter_mut().enumerate() {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.text_edit_singleline(&mut line.name);
+                        egui::ComboBox::from_id_source(("cat", idx))
+                            .selected_text(&line.category)
+                            .show_ui(ui, |ui| {
+                                for c in ["Engineering", "Graphics", "Commissioning", "Other"] {
+                                    ui.selectable_value(&mut line.category, c.to_string(), c);
+                                }
+                            });
+                        ui.add(
+                            egui::DragValue::new(&mut line.quantity)
+                                .speed(0.1)
+                                .prefix("Qty "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut line.hours_per_unit)
+                                .speed(0.1)
+                                .prefix("h/u "),
+                        );
+                        if ui.button("🗑").clicked() {
+                            remove_idx = Some(idx);
+                        }
+                    });
+                    custom_total += line.quantity.max(0.0) * line.hours_per_unit.max(0.0);
+                }
+                if let Some(idx) = remove_idx {
+                    self.project.custom_hour_lines.remove(idx);
+                }
+            });
+
+            Self::card_frame().show(&mut columns[1], |ui| {
+                custom_total = self
+                    .project
+                    .custom_hour_lines
+                    .iter()
+                    .map(|line| line.quantity.max(0.0) * line.hours_per_unit.max(0.0))
+                    .sum::<f32>();
+                let base_total = eng + gfx + cx + custom_total;
+                ui.label(RichText::new(format!("Base Total: {base_total:.1} h")).strong());
+                ui.label(format!("Overhead & Risk: {overhead:.1} h"));
+                ui.label(RichText::new(format!("Final Estimated Hours: {grand_total:.1} h")).strong());
+                ui.small("Calibrated model: direct effort + complexity factors + QA/PM/risk overhead.");
+            });
+
+            Self::card_frame().show(&mut columns[2], |ui| {
+                ui.label(RichText::new("Estimator Notes").strong());
+                ui.label("Use the ⏰ button in Hours Summation to tune adjustment modifiers.");
+                ui.label("Template hour mode can be configured in Template Tool (static or points-based).");
+            });
         });
     }
 
@@ -1919,9 +2104,13 @@ impl AutoMateApp {
                 name: format!("Template {}", self.project.templates.len() + 1),
                 equipment_type: String::new(),
                 points: vec!["New Point".to_string()],
+                hour_mode: HourCalculationMode::StaticByEquipment,
                 engineering_hours: 0.0,
+                engineering_hours_per_point: 0.25,
                 graphics_hours: 0.0,
+                graphics_hours_per_point: 0.12,
                 commissioning_hours: 0.0,
+                commissioning_hours_per_point: 0.18,
             });
         }
 
@@ -1946,21 +2135,53 @@ impl AutoMateApp {
                         }
                     });
 
+                    ui.horizontal(|ui| {
+                        ui.label("Hours method");
+                        ui.selectable_value(
+                            &mut template.hour_mode,
+                            HourCalculationMode::StaticByEquipment,
+                            "Static by equipment",
+                        );
+                        ui.selectable_value(
+                            &mut template.hour_mode,
+                            HourCalculationMode::PointsBased,
+                            "Points based",
+                        );
+                    });
+
                     ui.columns(3, |columns| {
                         columns[0].add(
-                            egui::DragValue::new(&mut template.engineering_hours)
-                                .speed(0.1)
-                                .prefix("Eng "),
+                            egui::DragValue::new(
+                                if template.hour_mode == HourCalculationMode::PointsBased {
+                                    &mut template.engineering_hours_per_point
+                                } else {
+                                    &mut template.engineering_hours
+                                },
+                            )
+                            .speed(0.1)
+                            .prefix("Eng "),
                         );
                         columns[1].add(
-                            egui::DragValue::new(&mut template.graphics_hours)
-                                .speed(0.1)
-                                .prefix("Graphics "),
+                            egui::DragValue::new(
+                                if template.hour_mode == HourCalculationMode::PointsBased {
+                                    &mut template.graphics_hours_per_point
+                                } else {
+                                    &mut template.graphics_hours
+                                },
+                            )
+                            .speed(0.1)
+                            .prefix("Graphics "),
                         );
                         columns[2].add(
-                            egui::DragValue::new(&mut template.commissioning_hours)
-                                .speed(0.1)
-                                .prefix("Cx "),
+                            egui::DragValue::new(
+                                if template.hour_mode == HourCalculationMode::PointsBased {
+                                    &mut template.commissioning_hours_per_point
+                                } else {
+                                    &mut template.commissioning_hours
+                                },
+                            )
+                            .speed(0.1)
+                            .prefix("Cx "),
                         );
                     });
 
@@ -2006,16 +2227,16 @@ impl AutoMateApp {
         });
         ui.horizontal(|ui| {
             if ui.button("Load PDF").clicked() {
-                if let Some(file) = pollster::block_on(
-                    rfd::AsyncFileDialog::new()
-                        .add_filter("PDF", &["pdf"])
-                        .pick_file(),
-                ) {
-                    let bytes = pollster::block_on(file.read());
-                    self.project.overlay_pdf = Some(file.file_name().replace(' ', "_"));
-                    self.overlay_pdf_bytes = Some(bytes);
-                    self.overlay_texture = None;
-                    self.status = "Loaded overlay PDF".to_string();
+                if let Some(path) = FileDialog::new().add_filter("PDF", &["pdf"]).pick_file() {
+                    match fs::read(&path) {
+                        Ok(bytes) => {
+                            self.project.overlay_pdf = Some(Self::sanitize_asset_name(&path));
+                            self.overlay_pdf_bytes = Some(bytes);
+                            self.overlay_texture = None;
+                            self.status = "Loaded overlay PDF".to_string();
+                        }
+                        Err(err) => self.status = format!("PDF load failed: {err}"),
+                    }
                 }
             }
             ui.label(
@@ -2336,6 +2557,7 @@ impl App for AutoMateApp {
             AppScreen::Login => self.login_screen(ctx),
             AppScreen::Studio => {
                 self.ensure_template_seeded();
+                self.sync_template_points();
                 self.autosave_project();
                 self.titlebar(ctx, _frame);
                 egui::TopBottomPanel::top("toolbar")
