@@ -1481,6 +1481,7 @@ impl AutoMateApp {
         if let Some(id) = self.selected_object {
             if let Some(index) = self.project.objects.iter().position(|o| o.id == id) {
                 let mut apply_template = false;
+                let mut delete_clicked = false;
                 let obj = &mut self.project.objects[index];
                 Self::card_frame().show(ui, |ui| {
                     ui.label(format!(
@@ -1494,12 +1495,7 @@ impl AutoMateApp {
                         .button(RichText::new("Delete Object").color(Color32::LIGHT_RED))
                         .clicked()
                     {
-                        if obj.object_type == ObjectType::Building {
-                            self.status =
-                                "Delete blocked: building is required at root".to_string();
-                        } else {
-                            self.remove_object_subtree(id);
-                        }
+                        delete_clicked = true;
                     }
 
                     if obj.object_type == ObjectType::Controller {
@@ -1616,6 +1612,14 @@ impl AutoMateApp {
                         });
                     }
                 });
+
+                if delete_clicked {
+                    if self.project.objects[index].object_type == ObjectType::Building {
+                        self.status = "Delete blocked: building is required at root".to_string();
+                    } else {
+                        self.remove_object_subtree(id);
+                    }
+                }
 
                 if apply_template {
                     self.apply_template_to_selected_equipment();
