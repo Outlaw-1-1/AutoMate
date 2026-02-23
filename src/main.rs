@@ -790,6 +790,10 @@ impl AutoMateApp {
             })
     }
 
+    fn auth_shell_frame() -> egui::Frame {
+        Self::surface_panel().outer_margin(egui::Margin::same(0.0))
+    }
+
     fn card_frame() -> egui::Frame {
         egui::Frame::default()
             .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 7))
@@ -995,7 +999,9 @@ impl AutoMateApp {
                             self.render_login_form(&mut columns[1]);
                         });
                     });
-                });
+                        });
+                    },
+                );
             });
     }
 
@@ -3387,7 +3393,7 @@ impl App for AutoMateApp {
 
         let mut style = (*ctx.style()).clone();
         style.spacing.item_spacing = egui::vec2(6.0, 6.0);
-        if self.app_screen == AppScreen::Splash {
+        if self.app_screen != AppScreen::Studio {
             style.visuals.window_fill = Color32::TRANSPARENT;
             style.visuals.panel_fill = Color32::TRANSPARENT;
         } else {
