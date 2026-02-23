@@ -574,6 +574,13 @@ struct AutoMateApp {
     overlay_pan: egui::Vec2,
 }
 
+#[derive(Debug, Clone)]
+struct FeatureMetric {
+    name: &'static str,
+    is_used: bool,
+    note: String,
+}
+
 impl AutoMateApp {
     fn new(cc: &CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
@@ -1889,6 +1896,11 @@ impl AutoMateApp {
     }
 
     fn project_overview(&mut self, ui: &mut Ui) {
+        let metrics = self.feature_metrics();
+        let used_features = metrics.iter().filter(|m| m.is_used).count();
+        let total_features = metrics.len().max(1);
+        let adoption_ratio = used_features as f32 / total_features as f32;
+
         Self::card_frame().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(RichText::new("Project Overview").strong());
@@ -1909,7 +1921,179 @@ impl AutoMateApp {
             ));
             ui.label(format!("Total Objects: {}", self.project.objects.len()));
             ui.small(format!("Project ID: {}", self.project.project_uuid));
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.label(RichText::new("Feature Adoption").strong());
+            ui.add(
+                egui::ProgressBar::new(adoption_ratio)
+                    .text(format!("{used_features}/{total_features} active workflows")),
+            );
+            for metric in metrics {
+                let icon = if metric.is_used { "✅" } else { "⚪" };
+                ui.small(format!("{icon} {} — {}", metric.name, metric.note));
+            }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.label(RichText::new("QOL Health Check").strong());
+            let issues = self.ux_health_issues();
+            if issues.is_empty() {
+                ui.small("All key UX and data quality checks look healthy.");
+            } else {
+                for issue in &issues {
+                    ui.small(format!("⚠ {issue}"));
+                }
+            }
+
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Run QOL Pass").clicked() {
+                    self.run_qol_pass();
+                }
+                if ui.button("Apply Recommended Defaults").clicked() {
+                    self.apply_recommended_settings();
+                    self.status = "Applied recommended defaults".to_string();
+                }
+            });
         });
+    }
+
+    fn feature_metrics(&self) -> Vec<FeatureMetric> {
+        vec![
+            FeatureMetric {
+                name: "Proposal metadata",
+                is_used: !self.project.proposal.client_name.trim().is_empty()
+                    || !self.project.proposal.project_location.trim().is_empty()
+                    || !self.project.proposal.proposal_number.trim().is_empty(),
+                note: "Client/location/proposal fields".to_string(),
+            },
+            FeatureMetric {
+                name: "BAS object modeling",
+                is_used: self.project.objects.len() > 1,
+                note: format!("{} objects in hierarchy", self.project.objects.len()),
+            },
+            FeatureMetric {
+                name: "Template-driven engineering",
+                is_used: self
+                    .project
+                    .objects
+                    .iter()
+                    .any(|o| o.object_type == ObjectType::Equipment && !o.template_name.is_empty()),
+                note: "Equipment assigned to templates".to_string(),
+            },
+            FeatureMetric {
+                name: "Drawing overlay",
+                is_used: self.project.overlay_pdf.is_some()
+                    || !self.project.overlay_nodes.is_empty(),
+                note: format!(
+                    "{} tokens • {} routes",
+                    self.project.overlay_nodes.len(),
+                    self.project.overlay_lines.len()
+                ),
+            },
+            FeatureMetric {
+                name: "Estimator adjustments",
+                is_used: !self.project.custom_hour_lines.is_empty()
+                    || self.project.estimator.complexity_factor != 1.0
+                    || self.project.estimator.renovation_factor != 1.0
+                    || self.project.estimator.integration_factor != 1.0,
+                note: format!("{} custom lines", self.project.custom_hour_lines.len()),
+            },
+        ]
+    }
+
+    fn ux_health_issues(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        if self.project.settings.ui_scale < 0.95 || self.project.settings.ui_scale > 1.25 {
+            issues.push("UI scale is outside recommended ergonomic range (0.95–1.25).".to_string());
+        }
+        if self.object_search_query.trim().len() > 40 {
+            issues.push(
+                "Search query is very long; consider narrowing terms for faster scanning."
+                    .to_string(),
+            );
+        }
+        if self
+            .project
+            .objects
+            .iter()
+            .filter(|o| o.object_type == ObjectType::Equipment)
+            .any(|o| o.equipment_tag.trim().is_empty())
+        {
+            issues.push("Some equipment objects are missing equipment tags.".to_string());
+        }
+        if self.project.settings.autosave_minutes > 15 {
+            issues.push("Autosave interval is above 15 minutes.".to_string());
+        }
+        issues
+    }
+
+    fn run_qol_pass(&mut self) {
+        self.apply_recommended_settings();
+
+        for obj in self
+            .project
+            .objects
+            .iter_mut()
+            .filter(|o| o.object_type == ObjectType::Equipment)
+        {
+            if obj.equipment_tag.trim().is_empty() {
+                let eq_type = if obj.equipment_type.trim().is_empty() {
+                    "EQ"
+                } else {
+                    obj.equipment_type.trim()
+                };
+                obj.equipment_tag = format!("{}-{}", eq_type, obj.id);
+            }
+            if obj.name.trim().is_empty() {
+                obj.name = format!("Equipment {}", obj.id);
+            }
+        }
+
+        for obj in self.project.objects.iter_mut() {
+            if obj.object_type == ObjectType::Point && obj.name.trim().is_empty() {
+                obj.name = format!("Point {}", obj.id);
+            }
+        }
+
+        self.status =
+            "QOL pass complete: defaults normalized and missing labels filled".to_string();
+    }
+
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.app_screen != AppScreen::Studio {
+            return;
+        }
+
+        let save = ctx.input(|i| i.key_pressed(egui::Key::S) && i.modifiers.command);
+        if save {
+            self.save_project();
+        }
+
+        let new_project = ctx.input(|i| i.key_pressed(egui::Key::N) && i.modifiers.command);
+        if new_project {
+            self.project = Project::default();
+            self.selected_object = Some(1);
+            self.project_path = None;
+            self.overview_image_bytes = None;
+            self.overview_texture = None;
+            self.overlay_pdf_bytes = None;
+            self.overlay_texture = None;
+            self.status = "Started new project".to_string();
+        }
+
+        let undo = ctx.input(|i| i.key_pressed(egui::Key::Z) && i.modifiers.command);
+        if undo && self.current_view == ToolView::DrawingsOverlay {
+            self.overlay_undo();
+        }
+
+        let redo = ctx.input(|i| {
+            (i.key_pressed(egui::Key::Y) && i.modifiers.command)
+                || (i.key_pressed(egui::Key::Z) && i.modifiers.command && i.modifiers.shift)
+        });
+        if redo && self.current_view == ToolView::DrawingsOverlay {
+            self.overlay_redo();
+        }
     }
 
     fn left_sidebar(&mut self, ui: &mut Ui) {
@@ -3125,6 +3309,7 @@ impl AutoMateApp {
 
 impl App for AutoMateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        self.handle_shortcuts(ctx);
         if self.app_screen != AppScreen::Splash {
             self.draw_studio_background(ctx);
         }
