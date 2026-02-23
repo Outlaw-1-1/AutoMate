@@ -46,6 +46,23 @@ enum ToolView {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayTool {
+    Route,
+    PlaceController,
+    PlaceEquipment,
+}
+
+impl OverlayTool {
+    fn label(self) -> &'static str {
+        match self {
+            OverlayTool::Route => "Wire tool",
+            OverlayTool::PlaceController => "Place controller",
+            OverlayTool::PlaceEquipment => "Place equipment",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppScreen {
     Splash,
     Login,
@@ -133,6 +150,24 @@ struct BasObject {
     controller_license: String,
     #[serde(default)]
     template_name: String,
+    #[serde(default)]
+    equipment_type_override: bool,
+    #[serde(default)]
+    hours_override: bool,
+    #[serde(default)]
+    hours_override_mode: HourCalculationMode,
+    #[serde(default)]
+    override_engineering_hours: f32,
+    #[serde(default)]
+    override_engineering_hours_per_point: f32,
+    #[serde(default)]
+    override_graphics_hours: f32,
+    #[serde(default)]
+    override_graphics_hours_per_point: f32,
+    #[serde(default)]
+    override_commissioning_hours: f32,
+    #[serde(default)]
+    override_commissioning_hours_per_point: f32,
     #[serde(default)]
     point_kind: PointKind,
     property_groups: Vec<PropertyGroup>,
@@ -284,6 +319,16 @@ impl PointKind {
         }
     }
 
+    fn icon(&self) -> &'static str {
+        match self {
+            PointKind::AI => "🟢",
+            PointKind::AO => "🟩",
+            PointKind::DI => "🔵",
+            PointKind::DO => "🟦",
+            PointKind::NetworkX => "🧷",
+        }
+    }
+
     fn all() -> [PointKind; 5] {
         [
             PointKind::AI,
@@ -376,7 +421,7 @@ struct Project {
     overlay_pdf: Option<String>,
     overlay_nodes: Vec<OverlayNode>,
     overlay_lines: Vec<OverlayLine>,
-    #[serde(default)]
+    #[serde(skip, default)]
     templates: Vec<EquipmentTemplate>,
     #[serde(default)]
     custom_hour_lines: Vec<HourLine>,
@@ -404,6 +449,15 @@ impl Default for Project {
             controller_type: String::new(),
             controller_license: String::new(),
             template_name: String::new(),
+            equipment_type_override: false,
+            hours_override: false,
+            hours_override_mode: HourCalculationMode::StaticByEquipment,
+            override_engineering_hours: 0.0,
+            override_engineering_hours_per_point: 0.0,
+            override_graphics_hours: 0.0,
+            override_graphics_hours_per_point: 0.0,
+            override_commissioning_hours: 0.0,
+            override_commissioning_hours_per_point: 0.0,
             point_kind: PointKind::AI,
             property_groups: vec![],
         };
@@ -493,7 +547,6 @@ struct AutoMateApp {
     project_path: Option<PathBuf>,
     show_about: bool,
     show_software_settings: bool,
-    dragging_palette: Option<ObjectType>,
     dragging_tree_object: Option<u64>,
     active_line_start: Option<[f32; 2]>,
     is_fullscreen: bool,
@@ -527,7 +580,6 @@ impl AutoMateApp {
             project_path: None,
             show_about: false,
             show_software_settings: false,
-            dragging_palette: None,
             dragging_tree_object: None,
             active_line_start: None,
             is_fullscreen: true,
@@ -593,16 +645,52 @@ impl AutoMateApp {
                     .iter()
                     .filter(|o| o.parent_id == Some(eq.id) && o.object_type == ObjectType::Point)
                     .count() as f32;
-                match t.hour_mode {
+                let hour_mode = if eq.hours_override {
+                    eq.hours_override_mode.clone()
+                } else {
+                    t.hour_mode.clone()
+                };
+
+                match hour_mode {
                     HourCalculationMode::StaticByEquipment => {
-                        eng += t.engineering_hours;
-                        gfx += t.graphics_hours;
-                        cx += t.commissioning_hours;
+                        let eng_hours = if eq.hours_override {
+                            eq.override_engineering_hours
+                        } else {
+                            t.engineering_hours
+                        };
+                        let gfx_hours = if eq.hours_override {
+                            eq.override_graphics_hours
+                        } else {
+                            t.graphics_hours
+                        };
+                        let cx_hours = if eq.hours_override {
+                            eq.override_commissioning_hours
+                        } else {
+                            t.commissioning_hours
+                        };
+                        eng += eng_hours;
+                        gfx += gfx_hours;
+                        cx += cx_hours;
                     }
                     HourCalculationMode::PointsBased => {
-                        eng += eq_points * t.engineering_hours_per_point;
-                        gfx += eq_points * t.graphics_hours_per_point;
-                        cx += eq_points * t.commissioning_hours_per_point;
+                        let eng_per_point = if eq.hours_override {
+                            eq.override_engineering_hours_per_point
+                        } else {
+                            t.engineering_hours_per_point
+                        };
+                        let gfx_per_point = if eq.hours_override {
+                            eq.override_graphics_hours_per_point
+                        } else {
+                            t.graphics_hours_per_point
+                        };
+                        let cx_per_point = if eq.hours_override {
+                            eq.override_commissioning_hours_per_point
+                        } else {
+                            t.commissioning_hours_per_point
+                        };
+                        eng += eq_points * eng_per_point;
+                        gfx += eq_points * gfx_per_point;
+                        cx += eq_points * cx_per_point;
                     }
                 }
             }
@@ -891,9 +979,25 @@ impl AutoMateApp {
     }
 
     fn local_pdf_path() -> Option<PathBuf> {
+        fn resolve_candidate(path: PathBuf) -> Option<PathBuf> {
+            if path.is_file() {
+                return Some(path);
+            }
+
+            if path.is_dir() {
+                for name in AutoMateApp::platform_pdf_names() {
+                    let candidate = path.join(name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+
+            None
+        }
+
         if let Ok(path) = std::env::var("AUTOMATE_PDFIUM_LIB") {
-            let path = PathBuf::from(path);
-            if path.exists() {
+            if let Some(path) = resolve_candidate(PathBuf::from(path)) {
                 return Some(path);
             }
         }
@@ -908,50 +1012,25 @@ impl AutoMateApp {
         }
 
         for root in roots {
+            if let Some(path) = resolve_candidate(root.clone()) {
+                return Some(path);
+            }
+
+            for subdir in ["bin", "lib", "libs"] {
+                if let Some(path) = resolve_candidate(root.join(subdir)) {
+                    return Some(path);
+                }
+            }
+
             for name in Self::platform_pdf_names() {
                 let candidate = root.join(name);
-                if candidate.exists() {
+                if candidate.is_file() {
                     return Some(candidate);
                 }
             }
         }
 
         None
-    }
-
-    fn to_template(line: &HourLine) -> EquipmentTemplate {
-        let name = line.name.trim();
-        EquipmentTemplate {
-            name: if name.is_empty() {
-                "Custom Hour Template".to_string()
-            } else {
-                format!("{} (Hours)", name)
-            },
-            equipment_type: "Custom".to_string(),
-            points: vec![
-                TemplatePoint::ai("Space Temp"),
-                TemplatePoint::ai("Template Point"),
-            ],
-            hour_mode: HourCalculationMode::StaticByEquipment,
-            engineering_hours: if line.category == "Engineering" {
-                line.quantity.max(0.0) * line.hours_per_unit.max(0.0)
-            } else {
-                0.0
-            },
-            engineering_hours_per_point: 0.0,
-            graphics_hours: if line.category == "Graphics" {
-                line.quantity.max(0.0) * line.hours_per_unit.max(0.0)
-            } else {
-                0.0
-            },
-            graphics_hours_per_point: 0.0,
-            commissioning_hours: if line.category == "Commissioning" {
-                line.quantity.max(0.0) * line.hours_per_unit.max(0.0)
-            } else {
-                0.0
-            },
-            commissioning_hours_per_point: 0.0,
-        }
     }
 
     fn template_seed_data() -> Vec<EquipmentTemplate> {
@@ -1034,29 +1113,52 @@ impl AutoMateApp {
         ]
     }
 
+    fn templates_store_path() -> PathBuf {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(".automate_templates.json");
+        }
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return PathBuf::from(appdata)
+                .join("AutoMate")
+                .join("templates.json");
+        }
+        PathBuf::from("automate_templates.json")
+    }
+
+    fn load_user_templates() -> Vec<EquipmentTemplate> {
+        let path = Self::templates_store_path();
+        if let Ok(raw) = fs::read_to_string(&path) {
+            if let Ok(templates) = serde_json::from_str::<Vec<EquipmentTemplate>>(&raw) {
+                if !templates.is_empty() {
+                    return templates;
+                }
+            }
+        }
+        Self::template_seed_data()
+    }
+
+    fn save_user_templates(&mut self) {
+        let path = Self::templates_store_path();
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        match serde_json::to_string_pretty(&self.user_templates) {
+            Ok(raw) => {
+                if let Err(err) = fs::write(&path, raw) {
+                    self.status = format!("Failed to save templates: {err}");
+                }
+            }
+            Err(err) => self.status = format!("Failed to serialize templates: {err}"),
+        }
+    }
+
     fn ensure_template_seeded(&mut self) {
-        if self.project.templates.is_empty() {
-            self.project.templates = Self::template_seed_data();
+        if self.user_templates.is_empty() {
+            self.user_templates = Self::template_seed_data();
         }
 
         let mut names = BTreeSet::new();
-        self.project
-            .templates
-            .retain(|t| names.insert(t.name.clone()));
-
-        for line in &self.project.custom_hour_lines {
-            let candidate = Self::to_template(line);
-            if let Some(existing) = self
-                .project
-                .templates
-                .iter_mut()
-                .find(|t| t.name == candidate.name)
-            {
-                *existing = candidate;
-            } else {
-                self.project.templates.push(candidate);
-            }
-        }
+        self.user_templates.retain(|t| names.insert(t.name.clone()));
     }
 
     fn refresh_overview_texture(&mut self, ctx: &egui::Context) {
@@ -1073,7 +1175,7 @@ impl AutoMateApp {
         }
     }
 
-    fn refresh_overlay_texture(&mut self, ctx: &egui::Context, target_width: u16) {
+    fn refresh_overlay_texture(&mut self, ctx: &egui::Context) {
         let Some(bytes) = &self.overlay_pdf_bytes else {
             self.overlay_texture = None;
             return;
@@ -1117,7 +1219,7 @@ impl AutoMateApp {
 
         let render = match page.render_with_config(
             &PdfRenderConfig::new()
-                .set_target_width(target_width.max(400) as i32)
+                .set_target_width(page.width().value.round() as i32)
                 .render_form_data(true),
         ) {
             Ok(render) => render,
@@ -1226,6 +1328,15 @@ impl AutoMateApp {
             controller_type: "Lynxspring Edge".to_string(),
             controller_license: "None".to_string(),
             template_name: String::new(),
+            equipment_type_override: false,
+            hours_override: false,
+            hours_override_mode: HourCalculationMode::StaticByEquipment,
+            override_engineering_hours: 0.0,
+            override_engineering_hours_per_point: 0.0,
+            override_graphics_hours: 0.0,
+            override_graphics_hours_per_point: 0.0,
+            override_commissioning_hours: 0.0,
+            override_commissioning_hours_per_point: 0.0,
             point_kind: PointKind::AI,
             property_groups: vec![],
         });
@@ -1316,8 +1427,15 @@ impl AutoMateApp {
     }
 
     fn place_overlay_node(&mut self, object_id: u64, pos: [f32; 2]) {
-        if self.project.objects.iter().all(|o| o.id != object_id) {
+        let Some(object) = self.project.objects.iter().find(|o| o.id == object_id) else {
             self.status = "Cannot place overlay token for missing object".to_string();
+            return;
+        };
+        if !matches!(
+            object.object_type,
+            ObjectType::Controller | ObjectType::Equipment
+        ) {
+            self.status = "Only controllers and equipment can be placed on overlay".to_string();
             return;
         }
         self.push_overlay_history();
@@ -1348,10 +1466,20 @@ impl AutoMateApp {
             .overlay_nodes
             .retain(|node| valid_ids.contains(&node.object_id));
 
+        let equipment_ids: Vec<u64> = self
+            .project
+            .objects
+            .iter()
+            .filter(|obj| obj.object_type == ObjectType::Equipment)
+            .map(|obj| obj.id)
+            .collect();
         for obj in &mut self.project.objects {
             if obj.object_type == ObjectType::Equipment {
                 obj.property_groups.clear();
             }
+        }
+        for eq_id in equipment_ids {
+            self.sync_equipment_from_template(eq_id);
         }
 
         let max_id = self.project.objects.iter().map(|o| o.id).max().unwrap_or(0);
@@ -1820,83 +1948,88 @@ impl AutoMateApp {
         let mut delete_clicked = false;
         let mut duplicate_clicked = false;
 
+        let children: Vec<u64> = self
+            .project
+            .objects
+            .iter()
+            .filter(|child| child.parent_id == Some(id))
+            .map(|child| child.id)
+            .collect();
+        let has_children = !children.is_empty();
+
         let selected = self.selected_object == Some(id);
-        let title = format!("{} {}", obj.object_type.icon(), obj.name);
-        let text = if selected {
-            RichText::new(title).color(Color32::WHITE)
-        } else {
-            RichText::new(title).color(Color32::from_rgb(230, 235, 245))
-        };
+        ui.horizontal(|ui| {
+            if has_children {
+                let collapsed = self.collapsed_tree_nodes.contains(&id);
+                if ui.small_button(if collapsed { "▸" } else { "▾" }).clicked() {
+                    if collapsed {
+                        self.collapsed_tree_nodes.remove(&id);
+                    } else {
+                        self.collapsed_tree_nodes.insert(id);
+                    }
+                }
+            } else {
+                ui.label("  ");
+            }
 
-        let row = ui.selectable_label(selected, text);
-        if row.drag_started() {
-            self.dragging_tree_object = Some(id);
-        }
-        if row.clicked() {
-            self.selected_object = Some(id);
-        }
-        if row.hovered()
-            && ui.input(|i| i.pointer.any_released())
-            && obj.object_type != ObjectType::Point
-        {
-            if let Some(dragged_id) = self.dragging_tree_object.take() {
-                if dragged_id != id {
-                    self.reparent_object(dragged_id, id);
-                }
-            }
-        }
-        row.context_menu(|ui| {
-            if ui.button("Duplicate").clicked() {
-                duplicate_clicked = true;
-                ui.close_menu();
-            }
-            if ui.button("Delete").clicked() {
-                delete_clicked = true;
-                ui.close_menu();
-            }
-            match obj.object_type {
-                ObjectType::Building => {
-                    if ui.button("Add Controller").clicked() {
-                        add_child = Some(ObjectType::Controller);
-                        ui.close_menu();
-                    }
-                }
-                ObjectType::Controller => {
-                    if ui.button("Add Equipment").clicked() {
-                        add_child = Some(ObjectType::Equipment);
-                        ui.close_menu();
-                    }
-                }
-                ObjectType::Equipment => {
-                    if ui.button("Add Point").clicked() {
-                        add_child = Some(ObjectType::Point);
-                        ui.close_menu();
-                    }
-                }
-                ObjectType::Point => {}
-            }
-        });
+            let node_icon = if obj.object_type == ObjectType::Point {
+                obj.point_kind.icon()
+            } else {
+                obj.object_type.icon()
+            };
+            let title = format!("{} {}", node_icon, obj.name);
+            let text = if selected {
+                RichText::new(title).color(Color32::WHITE)
+            } else {
+                RichText::new(title).color(Color32::from_rgb(230, 235, 245))
+            };
 
-        if obj.object_type != ObjectType::Point {
-            ui.horizontal_wrapped(|ui| match obj.object_type {
-                ObjectType::Building => {
-                    if ui.button("+ Controller").clicked() {
-                        add_child = Some(ObjectType::Controller);
+            let row = ui.selectable_label(selected, text);
+            if row.drag_started() {
+                self.dragging_tree_object = Some(id);
+            }
+            if row.clicked() {
+                self.selected_object = Some(id);
+            }
+            if row.hovered() && ui.input(|i| i.pointer.any_released()) {
+                if let Some(dragged_id) = self.dragging_tree_object.take() {
+                    if dragged_id != id {
+                        self.reparent_object(dragged_id, id);
                     }
                 }
-                ObjectType::Controller => {
-                    if ui.button("+ Equipment").clicked() {
-                        add_child = Some(ObjectType::Equipment);
-                    }
+            }
+            row.context_menu(|ui| {
+                if ui.button("Duplicate").clicked() {
+                    duplicate_clicked = true;
+                    ui.close_menu();
                 }
-                ObjectType::Equipment => {
-                    if ui.button("+ Point").clicked() {
-                        add_child = Some(ObjectType::Point);
-                    }
+                if ui.button("Delete").clicked() {
+                    delete_clicked = true;
+                    ui.close_menu();
                 }
-                ObjectType::Point => {}
+                match obj.object_type {
+                    ObjectType::Building => {
+                        if ui.button("Add Controller").clicked() {
+                            add_child = Some(ObjectType::Controller);
+                            ui.close_menu();
+                        }
+                    }
+                    ObjectType::Controller => {
+                        if ui.button("Add Equipment").clicked() {
+                            add_child = Some(ObjectType::Equipment);
+                            ui.close_menu();
+                        }
+                    }
+                    ObjectType::Equipment => {
+                        if ui.button("Add Point").clicked() {
+                            add_child = Some(ObjectType::Point);
+                            ui.close_menu();
+                        }
+                    }
+                    ObjectType::Point => {}
+                }
             });
-        }
+        });
 
         if let Some(kind) = add_child {
             self.add_object(kind, Some(id));
@@ -1908,13 +2041,9 @@ impl AutoMateApp {
             self.remove_object_subtree(id);
         }
 
-        let children: Vec<u64> = self
-            .project
-            .objects
-            .iter()
-            .filter(|child| child.parent_id == Some(id))
-            .map(|child| child.id)
-            .collect();
+        if self.collapsed_tree_nodes.contains(&id) {
+            return;
+        }
 
         for child in children {
             ui.indent(("child", child), |ui| self.object_node(ui, child));
@@ -1946,11 +2075,14 @@ impl AutoMateApp {
             .cloned()
         {
             if let Some(eq_obj) = self.project.objects.iter_mut().find(|o| o.id == obj_id) {
-                if eq_obj.equipment_type.trim().is_empty() {
+                if !eq_obj.equipment_type_override {
                     eq_obj.equipment_type = template.equipment_type.clone();
                 }
                 if eq_obj.equipment_tag.trim().is_empty() {
                     eq_obj.equipment_tag = format!("{}-{}", template.equipment_type, obj_id);
+                }
+                if !eq_obj.hours_override {
+                    eq_obj.hours_override_mode = template.hour_mode.clone();
                 }
             }
             let existing_points: HashSet<String> = self
@@ -1981,6 +2113,8 @@ impl AutoMateApp {
             if let Some(index) = self.project.objects.iter().position(|o| o.id == id) {
                 let mut apply_template = false;
                 let mut delete_clicked = false;
+                let mut template_changed = false;
+                let mut override_changed = false;
                 let obj = &mut self.project.objects[index];
                 Self::card_frame().show(ui, |ui| {
                     ui.label(format!(
@@ -2048,9 +2182,24 @@ impl AutoMateApp {
                     if obj.object_type == ObjectType::Equipment {
                         ui.separator();
                         ui.label(RichText::new("Equipment Data").strong());
+
+                        if ui
+                            .checkbox(
+                                &mut obj.equipment_type_override,
+                                "Override template equipment type",
+                            )
+                            .changed()
+                        {
+                            override_changed = true;
+                        }
+
                         ui.horizontal(|ui| {
                             ui.label("Equipment Type");
-                            ui.text_edit_singleline(&mut obj.equipment_type);
+                            if obj.equipment_type_override {
+                                ui.text_edit_singleline(&mut obj.equipment_type);
+                            } else {
+                                ui.label(RichText::new(&obj.equipment_type).italics());
+                            }
                         });
                         ui.horizontal(|ui| {
                             ui.label("Equipment Tag");
@@ -2086,6 +2235,89 @@ impl AutoMateApp {
                                     );
                                 }
                             });
+                        if obj.template_name != before_template {
+                            template_changed = true;
+                        }
+
+                        ui.separator();
+                        if ui
+                            .checkbox(
+                                &mut obj.hours_override,
+                                "Override template hours for this equipment",
+                            )
+                            .changed()
+                        {
+                            override_changed = true;
+                        }
+
+                        if obj.hours_override {
+                            ui.horizontal(|ui| {
+                                ui.radio_value(
+                                    &mut obj.hours_override_mode,
+                                    HourCalculationMode::StaticByEquipment,
+                                    "Static",
+                                );
+                                ui.radio_value(
+                                    &mut obj.hours_override_mode,
+                                    HourCalculationMode::PointsBased,
+                                    "Points-based",
+                                );
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Engineering");
+                                if obj.hours_override_mode == HourCalculationMode::PointsBased {
+                                    ui.add(
+                                        egui::DragValue::new(
+                                            &mut obj.override_engineering_hours_per_point,
+                                        )
+                                        .speed(0.05),
+                                    );
+                                } else {
+                                    ui.add(
+                                        egui::DragValue::new(&mut obj.override_engineering_hours)
+                                            .speed(0.05),
+                                    );
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Graphics");
+                                if obj.hours_override_mode == HourCalculationMode::PointsBased {
+                                    ui.add(
+                                        egui::DragValue::new(
+                                            &mut obj.override_graphics_hours_per_point,
+                                        )
+                                        .speed(0.05),
+                                    );
+                                } else {
+                                    ui.add(
+                                        egui::DragValue::new(&mut obj.override_graphics_hours)
+                                            .speed(0.05),
+                                    );
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Commissioning");
+                                if obj.hours_override_mode == HourCalculationMode::PointsBased {
+                                    ui.add(
+                                        egui::DragValue::new(
+                                            &mut obj.override_commissioning_hours_per_point,
+                                        )
+                                        .speed(0.05),
+                                    );
+                                } else {
+                                    ui.add(
+                                        egui::DragValue::new(&mut obj.override_commissioning_hours)
+                                            .speed(0.05),
+                                    );
+                                }
+                            });
+                        } else {
+                            ui.label(
+                                RichText::new("Hours sourced from selected template").italics(),
+                            );
+                        }
+
                         if ui.button("Generate Points from Template").clicked() {
                             apply_template = true;
                         }
@@ -2113,6 +2345,10 @@ impl AutoMateApp {
                     } else {
                         self.remove_object_subtree(id);
                     }
+                }
+
+                if template_changed || override_changed {
+                    self.sync_equipment_from_template(id);
                 }
 
                 if apply_template {
@@ -2343,10 +2579,17 @@ impl AutoMateApp {
 
     fn templates_view(&mut self, ui: &mut Ui) {
         ui.heading("Template Tool");
+        ui.label("Templates are user-level defaults and are not saved into project files.");
         ui.label("Define typical equipment point lists and default hours per template.");
+        let mut templates_dirty = false;
+        if ui.button("💾 Save Templates").clicked() {
+            self.save_user_templates();
+            self.status = "Saved user templates".to_string();
+        }
         if ui.button("+ New Template").clicked() {
-            self.project.templates.push(EquipmentTemplate {
-                name: format!("Template {}", self.project.templates.len() + 1),
+            templates_dirty = true;
+            self.user_templates.push(EquipmentTemplate {
+                name: format!("Template {}", self.user_templates.len() + 1),
                 equipment_type: String::new(),
                 points: vec![TemplatePoint::ai("New Point")],
                 hour_mode: HourCalculationMode::StaticByEquipment,
@@ -2361,7 +2604,7 @@ impl AutoMateApp {
 
         egui::ScrollArea::both().show(ui, |ui| {
             let mut remove_template = None;
-            for (idx, template) in self.project.templates.iter_mut().enumerate() {
+            for (idx, template) in self.user_templates.iter_mut().enumerate() {
                 Self::card_frame().show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.columns(3, |columns| {
@@ -2456,16 +2699,22 @@ impl AutoMateApp {
                         });
                     }
                     if let Some(pidx) = remove_point {
+                        templates_dirty = true;
                         template.points.remove(pidx);
                     }
                     if ui.button("+ Point").clicked() {
+                        templates_dirty = true;
                         template.points.push(TemplatePoint::ai("New Point"));
                     }
                 });
                 ui.add_space(6.0);
             }
             if let Some(idx) = remove_template {
-                self.project.templates.remove(idx);
+                templates_dirty = true;
+                self.user_templates.remove(idx);
+            }
+            if templates_dirty {
+                self.save_user_templates();
             }
         });
     }
@@ -2512,13 +2761,22 @@ impl AutoMateApp {
         });
 
         ui.separator();
-        ui.horizontal(|ui| {
-            if ui.button("Controller token").drag_started() {
-                self.dragging_palette = Some(ObjectType::Controller);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Overlay tools").strong());
+            for tool in [
+                OverlayTool::Route,
+                OverlayTool::PlaceController,
+                OverlayTool::PlaceEquipment,
+            ] {
+                if ui
+                    .selectable_label(self.overlay_tool == tool, tool.label())
+                    .clicked()
+                {
+                    self.overlay_tool = tool;
+                    self.active_line_start = None;
+                }
             }
-            if ui.button("Equipment token").drag_started() {
-                self.dragging_palette = Some(ObjectType::Equipment);
-            }
+            ui.separator();
             if ui.button("↶ Undo").clicked() {
                 self.overlay_undo();
             }
@@ -2526,133 +2784,196 @@ impl AutoMateApp {
                 self.overlay_redo();
             }
         });
-
-        let desired = egui::vec2(ui.available_width(), ui.available_height() - 16.0);
-        let (resp, painter) = ui.allocate_painter(desired, egui::Sense::click_and_drag());
-        if self.overlay_texture.is_none() && self.overlay_pdf_bytes.is_some() {
-            self.refresh_overlay_texture(ui.ctx(), desired.x as u16);
-        }
-        painter.rect_filled(
-            resp.rect,
-            10.0,
-            Color32::from_rgba_unmultiplied(255, 255, 255, 16),
+        ui.label(
+            RichText::new(
+                "Tip: Drag controllers/equipment from the tree onto the drawing, or use a placement tool and click.",
+            )
+            .color(Color32::from_gray(180)),
         );
-        painter.rect_stroke(resp.rect, 10.0, egui::Stroke::new(1.0, self.accent()));
 
-        if let Some(texture) = &self.overlay_texture {
-            painter.image(
-                texture.id(),
-                resp.rect,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                Color32::from_rgba_unmultiplied(255, 255, 255, 210),
-            );
-        }
-
-        if self.project.settings.show_overlay_grid {
-            let step = 36.0;
-            let mut x = resp.rect.left();
-            while x < resp.rect.right() {
-                painter.line_segment(
-                    [
-                        egui::pos2(x, resp.rect.top()),
-                        egui::pos2(x, resp.rect.bottom()),
-                    ],
-                    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 16)),
-                );
-                x += step;
+        ui.horizontal(|ui| {
+            if ui.button("➖").clicked() {
+                self.overlay_zoom = (self.overlay_zoom * 0.9).clamp(0.25, 4.0);
             }
-            let mut y = resp.rect.top();
-            while y < resp.rect.bottom() {
-                painter.line_segment(
-                    [
-                        egui::pos2(resp.rect.left(), y),
-                        egui::pos2(resp.rect.right(), y),
-                    ],
-                    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 16)),
-                );
-                y += step;
+            if ui.button("➕").clicked() {
+                self.overlay_zoom = (self.overlay_zoom * 1.1).clamp(0.25, 4.0);
             }
+            ui.label(format!("Zoom: {:.0}%", self.overlay_zoom * 100.0));
+            if ui.button("Reset View").clicked() {
+                self.overlay_zoom = 1.0;
+                self.overlay_pan = egui::Vec2::ZERO;
+            }
+        });
+
+        if self.overlay_texture.is_none() && self.overlay_pdf_bytes.is_some() {
+            self.refresh_overlay_texture(ui.ctx());
         }
 
-        for (idx, node) in self.project.overlay_nodes.iter().enumerate() {
-            let center = egui::pos2(resp.rect.left() + node.x, resp.rect.top() + node.y);
-            let status_color = match idx % 3 {
-                0 => Color32::from_rgba_unmultiplied(189, 86, 92, 220),
-                1 => Color32::from_rgba_unmultiplied(193, 162, 78, 220),
-                _ => Color32::from_rgba_unmultiplied(91, 156, 103, 220),
-            };
-            let obj_name = self
-                .project
-                .objects
-                .iter()
-                .find(|o| o.id == node.object_id)
-                .map(|o| {
-                    if o.object_type == ObjectType::Equipment {
-                        let tag = if o.equipment_tag.trim().is_empty() {
-                            o.name.as_str()
-                        } else {
-                            o.equipment_tag.as_str()
-                        };
-                        format!("{}: {tag}", ObjectType::Equipment.icon())
-                    } else {
-                        o.name.clone()
-                    }
-                })
-                .unwrap_or_else(|| "Token".to_string());
+        egui::ScrollArea::both()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let base_size = self
+                    .overlay_texture
+                    .as_ref()
+                    .map(|t| t.size_vec2())
+                    .unwrap_or_else(|| egui::vec2(1200.0, 1600.0));
+                let canvas_size = base_size * self.overlay_zoom;
+                let (resp, painter) =
+                    ui.allocate_painter(canvas_size, egui::Sense::click_and_drag());
 
-            let label_rect = egui::Rect::from_center_size(center, egui::vec2(138.0, 28.0));
-            painter.rect_filled(label_rect, 6.0, status_color);
-            painter.rect_stroke(
-                label_rect,
-                6.0,
-                egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
-            );
-            painter.text(
-                label_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                obj_name,
-                FontId::new(15.0, FontFamily::Proportional),
-                Color32::WHITE,
-            );
-        }
+                let zoom_scroll = ui.input(|i| i.raw_scroll_delta.y);
+                if resp.hovered()
+                    && zoom_scroll.abs() > f32::EPSILON
+                    && ui.input(|i| i.modifiers.ctrl)
+                {
+                    let factor = if zoom_scroll > 0.0 { 1.08 } else { 0.92 };
+                    self.overlay_zoom = (self.overlay_zoom * factor).clamp(0.25, 4.0);
+                }
+                if resp.dragged_by(egui::PointerButton::Middle) {
+                    self.overlay_pan += resp.drag_delta();
+                }
 
-        for line in &self.project.overlay_lines {
-            let a = egui::pos2(
-                resp.rect.left() + line.from[0],
-                resp.rect.top() + line.from[1],
-            );
-            let b = egui::pos2(resp.rect.left() + line.to[0], resp.rect.top() + line.to[1]);
-            painter.line_segment([a, b], egui::Stroke::new(2.0, self.accent()));
-        }
+                let draw_rect = resp.rect.translate(self.overlay_pan);
+                painter.rect_filled(
+                    draw_rect,
+                    0.0,
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 16),
+                );
+                painter.rect_stroke(draw_rect, 0.0, egui::Stroke::new(1.0, self.accent()));
 
-        if resp.hovered() {
-            if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
-                if ui.input(|i| i.pointer.any_released()) {
-                    if let Some(object_id) = self.dragging_tree_object.take() {
-                        self.place_overlay_node(
-                            object_id,
-                            [pointer.x - resp.rect.left(), pointer.y - resp.rect.top()],
+                if let Some(texture) = &self.overlay_texture {
+                    painter.image(
+                        texture.id(),
+                        draw_rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                    );
+                }
+
+                if self.project.settings.show_overlay_grid {
+                    let step = 36.0 * self.overlay_zoom;
+                    let mut x = draw_rect.left();
+                    while x < draw_rect.right() {
+                        painter.line_segment(
+                            [
+                                egui::pos2(x, draw_rect.top()),
+                                egui::pos2(x, draw_rect.bottom()),
+                            ],
+                            egui::Stroke::new(
+                                1.0,
+                                Color32::from_rgba_unmultiplied(255, 255, 255, 16),
+                            ),
                         );
-                    } else if let Some(kind) = self.dragging_palette.take() {
-                        self.pending_overlay_drop = Some((
-                            kind,
-                            [pointer.x - resp.rect.left(), pointer.y - resp.rect.top()],
-                        ));
-                    } else if resp.clicked() {
-                        let local = [pointer.x - resp.rect.left(), pointer.y - resp.rect.top()];
-                        if let Some(start) = self.active_line_start.take() {
-                            self.push_overlay_history();
-                            self.project.overlay_lines.push(OverlayLine {
-                                from: start,
-                                to: local,
-                            });
-                        } else {
-                            self.active_line_start = Some(local);
+                        x += step;
+                    }
+                    let mut y = draw_rect.top();
+                    while y < draw_rect.bottom() {
+                        painter.line_segment(
+                            [
+                                egui::pos2(draw_rect.left(), y),
+                                egui::pos2(draw_rect.right(), y),
+                            ],
+                            egui::Stroke::new(
+                                1.0,
+                                Color32::from_rgba_unmultiplied(255, 255, 255, 16),
+                            ),
+                        );
+                        y += step;
+                    }
+                }
+
+                for (idx, node) in self.project.overlay_nodes.iter().enumerate() {
+                    let center = egui::pos2(
+                        draw_rect.left() + node.x * self.overlay_zoom,
+                        draw_rect.top() + node.y * self.overlay_zoom,
+                    );
+                    let status_color = match idx % 3 {
+                        0 => Color32::from_rgba_unmultiplied(189, 86, 92, 220),
+                        1 => Color32::from_rgba_unmultiplied(193, 162, 78, 220),
+                        _ => Color32::from_rgba_unmultiplied(91, 156, 103, 220),
+                    };
+                    let obj_name = self
+                        .project
+                        .objects
+                        .iter()
+                        .find(|o| o.id == node.object_id)
+                        .map(|o| {
+                            let tag = if o.equipment_tag.trim().is_empty() {
+                                o.name.as_str()
+                            } else {
+                                o.equipment_tag.as_str()
+                            };
+                            format!("{}: {tag}", o.object_type.icon())
+                        })
+                        .unwrap_or_else(|| "Token".to_string());
+
+                    let label_rect = egui::Rect::from_center_size(
+                        center,
+                        egui::vec2(138.0, 28.0) * self.overlay_zoom.min(1.5),
+                    );
+                    painter.rect_filled(label_rect, 6.0, status_color);
+                    painter.rect_stroke(
+                        label_rect,
+                        6.0,
+                        egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
+                    );
+                    painter.text(
+                        label_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        obj_name,
+                        FontId::new(15.0 * self.overlay_zoom.min(1.4), FontFamily::Proportional),
+                        Color32::WHITE,
+                    );
+                }
+
+                for line in &self.project.overlay_lines {
+                    let a = egui::pos2(
+                        draw_rect.left() + line.from[0] * self.overlay_zoom,
+                        draw_rect.top() + line.from[1] * self.overlay_zoom,
+                    );
+                    let b = egui::pos2(
+                        draw_rect.left() + line.to[0] * self.overlay_zoom,
+                        draw_rect.top() + line.to[1] * self.overlay_zoom,
+                    );
+                    painter.line_segment([a, b], egui::Stroke::new(2.0, self.accent()));
+                }
+
+                if resp.hovered() {
+                    if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
+                        if ui.input(|i| i.pointer.any_released()) {
+                            let local = [
+                                (pointer.x - draw_rect.left()) / self.overlay_zoom,
+                                (pointer.y - draw_rect.top()) / self.overlay_zoom,
+                            ];
+                            if let Some(object_id) = self.dragging_tree_object.take() {
+                                self.place_overlay_node(object_id, local);
+                            } else if resp.clicked() {
+                                match self.overlay_tool {
+                                    OverlayTool::Route => {
+                                        if let Some(start) = self.active_line_start.take() {
+                                            self.push_overlay_history();
+                                            self.project.overlay_lines.push(OverlayLine {
+                                                from: start,
+                                                to: local,
+                                            });
+                                        } else {
+                                            self.active_line_start = Some(local);
+                                        }
+                                    }
+                                    OverlayTool::PlaceController => {
+                                        self.pending_overlay_drop =
+                                            Some((ObjectType::Controller, local));
+                                    }
+                                    OverlayTool::PlaceEquipment => {
+                                        self.pending_overlay_drop =
+                                            Some((ObjectType::Equipment, local));
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-            }
-        }
+            });
 
         if ui.input(|i| i.pointer.any_released()) {
             self.dragging_tree_object = None;

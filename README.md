@@ -71,3 +71,25 @@ cargo clean
 # rmdir /s /q target   (Windows cmd)
 cargo build
 ```
+
+## Troubleshooting PDF overlay renderer
+
+If you see this status in the app:
+
+- `PDF renderer unavailable (...)`
+
+AutoMate could not load the native PDFium library used to render drawing overlays.
+
+You can fix it by either:
+
+1. Placing the platform PDFium binary next to the executable (or in the current working
+   directory), including common `bin/`, `lib/`, or `libs/` subfolders.
+2. Setting `AUTOMATE_PDFIUM_LIB` to either:
+   - the full path to the PDFium library file, or
+   - a directory that contains that library.
+
+Expected library names by platform:
+
+- Windows: `pdfium.dll`
+- macOS: `libpdfium.dylib`
+- Linux: `libpdfium.so`
