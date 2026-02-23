@@ -800,7 +800,7 @@ impl AutoMateApp {
 
     fn card_frame() -> egui::Frame {
         egui::Frame::default()
-            .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 7))
+            .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 4))
             .stroke(egui::Stroke::new(
                 1.0,
                 Color32::from_rgba_unmultiplied(255, 255, 255, 20),
@@ -1010,7 +1010,7 @@ impl AutoMateApp {
 
     fn render_login_form(&mut self, ui: &mut Ui) {
         ui.set_min_width(360.0);
-        Self::card_frame_with_alpha(18).show(ui, |ui| {
+        Self::card_frame_with_alpha(14).show(ui, |ui| {
             ui.label(RichText::new("Operator ID").strong());
             ui.text_edit_singleline(&mut self.login_username);
             ui.label(RichText::new("Passphrase").strong());
