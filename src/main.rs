@@ -1,7 +1,9 @@
 use chrono::Local;
 use directories::ProjectDirs;
 use eframe::{
-    egui::{self, menu, Align2, Color32, FontFamily, FontId, RichText, Sense, TextureHandle, Ui},
+    egui::{
+        self, menu, vec2, Align2, Color32, FontFamily, FontId, RichText, Sense, TextureHandle, Ui,
+    },
     epaint::{Mesh, Shadow, Vertex},
     App, CreationContext, Frame, NativeOptions,
 };
@@ -26,6 +28,7 @@ fn main() -> eframe::Result<()> {
             .with_fullscreen(false)
             .with_decorations(false)
             .with_resizable(true)
+            .with_transparent(true)
             .with_inner_size([1600.0, 920.0]),
         ..Default::default()
     };
@@ -551,6 +554,7 @@ struct AutoMateApp {
     active_line_start: Option<[f32; 2]>,
     is_fullscreen: bool,
     app_screen: AppScreen,
+    viewport_configured_for: Option<AppScreen>,
     splash_started_at: Instant,
     login_username: String,
     login_password: String,
@@ -596,6 +600,7 @@ impl AutoMateApp {
             active_line_start: None,
             is_fullscreen: true,
             app_screen: AppScreen::Splash,
+            viewport_configured_for: None,
             splash_started_at: Instant::now(),
             login_username: String::new(),
             login_password: String::new(),
@@ -891,12 +896,54 @@ impl AutoMateApp {
         }
     }
 
+    fn configure_viewport_for_screen(&mut self, ctx: &egui::Context) {
+        if self.viewport_configured_for == Some(self.app_screen) {
+            return;
+        }
+
+        match self.app_screen {
+            AppScreen::Splash => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(200.0, 200.0)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(vec2(200.0, 200.0)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(vec2(200.0, 200.0)));
+                if let Some(center_cmd) = egui::ViewportCommand::center_on_screen(ctx) {
+                    ctx.send_viewport_cmd(center_cmd);
+                }
+            }
+            AppScreen::Login => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(760.0, 320.0)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(vec2(760.0, 320.0)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(vec2(760.0, 320.0)));
+                if let Some(center_cmd) = egui::ViewportCommand::center_on_screen(ctx) {
+                    ctx.send_viewport_cmd(center_cmd);
+                }
+            }
+            AppScreen::Studio => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(1600.0, 920.0)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(vec2(960.0, 640.0)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(vec2(
+                    f32::INFINITY,
+                    f32::INFINITY,
+                )));
+                if let Some(center_cmd) = egui::ViewportCommand::center_on_screen(ctx) {
+                    ctx.send_viewport_cmd(center_cmd);
+                }
+            }
+        }
+
+        self.viewport_configured_for = Some(self.app_screen);
+    }
+
     fn login_screen(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(Color32::TRANSPARENT))
+            .show(ctx, |ui| {
             ui.centered_and_justified(|ui| {
-                Self::surface_panel().show(ui, |ui| {
-                    ui.set_width(ui.available_width().min(760.0));
-                    ui.set_height(ui.available_height().min(320.0));
+                ui.allocate_ui_with_layout(
+                    vec2(760.0, 320.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        Self::surface_panel().show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             self.draw_mark(ui);
@@ -959,7 +1006,9 @@ impl AutoMateApp {
                             });
                         });
                     });
-                });
+                        });
+                    },
+                );
             });
         });
     }
@@ -3309,15 +3358,16 @@ impl AutoMateApp {
 
 impl App for AutoMateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        self.configure_viewport_for_screen(ctx);
         self.handle_shortcuts(ctx);
-        if self.app_screen != AppScreen::Splash {
+        if self.app_screen == AppScreen::Studio {
             self.draw_studio_background(ctx);
         }
         ctx.set_pixels_per_point(self.project.settings.ui_scale);
 
         let mut style = (*ctx.style()).clone();
         style.spacing.item_spacing = egui::vec2(6.0, 6.0);
-        if self.app_screen == AppScreen::Splash {
+        if self.app_screen != AppScreen::Studio {
             style.visuals.window_fill = Color32::TRANSPARENT;
             style.visuals.panel_fill = Color32::TRANSPARENT;
         } else {
