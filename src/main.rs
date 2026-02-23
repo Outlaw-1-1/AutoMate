@@ -969,39 +969,40 @@ impl AutoMateApp {
     }
 
     fn login_screen(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(Color32::from_rgb(14, 19, 30)))
-            .show(ctx, |ui| {
-                ui.with_layout(
-                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                    |ui| {
-                        let card_width = ui.available_width().min(900.0);
-                        Self::surface_panel().show(ui, |ui| {
-                            ui.set_width(card_width);
+        let panel = egui::CentralPanel::default()
+            .frame(egui::Frame::default().fill(Color32::from_rgb(14, 19, 30)));
 
-                            ui.columns(2, |columns| {
-                                columns[0].vertical_centered(|ui| {
-                                    self.draw_mark(ui);
-                                    ui.add_space(6.0);
-                                    ui.label(
-                                        RichText::new("Technical Application Login")
-                                            .size(24.0)
-                                            .strong(),
-                                    );
-                                    ui.label(
-                                        RichText::new(
-                                            "Secure sign-in for BAS estimating, drawings, and controls engineering.",
-                                        )
-                                        .size(14.0)
-                                        .color(Color32::from_gray(196)),
-                                    );
-                                });
-                                self.render_login_form(&mut columns[1]);
+        panel.show(ctx, |ui| {
+            ui.with_layout(
+                egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                |ui| {
+                    let card_width = ui.available_width().min(900.0);
+                    Self::surface_panel().show(ui, |ui| {
+                        ui.set_width(card_width);
+
+                        ui.columns(2, |columns| {
+                            columns[0].vertical_centered(|ui| {
+                                self.draw_mark(ui);
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new("Technical Application Login")
+                                        .size(24.0)
+                                        .strong(),
+                                );
+                                ui.label(
+                                    RichText::new(
+                                        "Secure sign-in for BAS estimating, drawings, and controls engineering.",
+                                    )
+                                    .size(14.0)
+                                    .color(Color32::from_gray(196)),
+                                );
                             });
+                            self.render_login_form(&mut columns[1]);
                         });
-                    },
-                );
-            });
+                    });
+                },
+            );
+        });
     }
 
     fn render_login_form(&mut self, ui: &mut Ui) {
