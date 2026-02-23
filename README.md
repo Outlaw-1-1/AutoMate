@@ -21,6 +21,33 @@ A Rust desktop prototype for data-driven BAS estimating and submittal workflows.
   - Drag controller/equipment tokens onto overlay canvas.
   - Draw line segments on overlay for routing/markup.
 
+## Feature inventory (current)
+
+- **Studio shell + UX:** splash/login/studio flow, custom title bar, toolbar menus, glass panels, adaptive UI scale.
+- **BAS object modeling:** hierarchical building/controller/equipment/point tree, reparenting, duplication, context actions.
+- **Template-driven engineering:** equipment templates with point generation and dual hour modes (static / points-based).
+- **Estimating:** calibrated labor model with complexity/renovation/integration factors and QA/PM/risk overhead.
+- **Project data lifecycle:** save/load obfuscated `.m8` bundles (ZIP + JSON + assets), autosave, markdown proposal export.
+- **Drawings overlay:** PDF/image-backed canvas with drag/drop tokens, route lines, undo/redo, and object-linked nodes.
+
+## Crates integrated in this iteration
+
+- `chrono`: readable local timestamps in proposal exports.
+- `itertools`: concise join logic for object-mix summaries in exported markdown.
+- `uuid`: stable project identity (`project_uuid`) for autosave naming and cross-file traceability.
+- `directories`: OS-native autosave fallback directory for unsaved projects.
+- `thiserror`: typed I/O/serialization/archive errors for cleaner save/load flow.
+
+## Crate adoption opportunities
+
+High-value public crates that can be integrated next:
+
+- `tracing` + `tracing-subscriber` for structured diagnostics and performance telemetry.
+- `anyhow` for higher-level context-rich error propagation in command-style workflows.
+- `rayon` for parallel heavy operations (PDF rasterization, large template expansions).
+- `strum` for enum iteration/labels to reduce UI boilerplate around object and point types.
+- `schemars` to generate JSON schema for project/template files and improve compatibility checks.
+
 ## Run
 
 ```bash
