@@ -1,4 +1,5 @@
 use chrono::Local;
+use directories::ProjectDirs;
 use eframe::{
     egui::{self, menu, Align2, Color32, FontFamily, FontId, RichText, Sense, TextureHandle, Ui},
     epaint::{Mesh, Shadow, Vertex},
@@ -15,6 +16,8 @@ use std::{
     path::{Path, PathBuf},
     time::Instant,
 };
+use thiserror::Error;
+use uuid::Uuid;
 use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
 fn main() -> eframe::Result<()> {
@@ -64,6 +67,16 @@ enum AppScreen {
     Splash,
     Login,
     Studio,
+}
+
+#[derive(Debug, Error)]
+enum AppIoError {
+    #[error("Serialization failed: {0}")]
+    Serialization(#[from] serde_json::Error),
+    #[error("Filesystem error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Archive error: {0}")]
+    Zip(#[from] zip::result::ZipError),
 }
 
 impl ToolView {
@@ -395,6 +408,10 @@ impl Default for EquipmentTemplate {
     }
 }
 
+fn default_project_uuid() -> Uuid {
+    Uuid::new_v4()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Project {
     name: String,
@@ -414,6 +431,8 @@ struct Project {
     settings: AppSettings,
     #[serde(default)]
     overview_image: Option<String>,
+    #[serde(default = "default_project_uuid")]
+    project_uuid: Uuid,
 }
 
 impl Default for Project {
@@ -515,6 +534,7 @@ impl Default for Project {
             next_id: 2,
             settings: AppSettings::default(),
             overview_image: None,
+            project_uuid: default_project_uuid(),
         }
     }
 }
@@ -547,11 +567,6 @@ struct AutoMateApp {
     left_sidebar_collapsed: bool,
     object_search_query: String,
     show_archived_templates: bool,
-    collapsed_tree_nodes: HashSet<u64>,
-    overlay_tool: OverlayTool,
-    user_templates: Vec<EquipmentTemplate>,
-    overlay_zoom: f32,
-    overlay_pan: egui::Vec2,
 }
 
 impl AutoMateApp {
@@ -585,11 +600,6 @@ impl AutoMateApp {
             left_sidebar_collapsed: false,
             object_search_query: String::new(),
             show_archived_templates: false,
-            collapsed_tree_nodes: HashSet::new(),
-            overlay_tool: OverlayTool::Route,
-            user_templates: Self::load_user_templates(),
-            overlay_zoom: 1.0,
-            overlay_pan: egui::Vec2::ZERO,
         }
     }
 
@@ -1440,6 +1450,10 @@ impl AutoMateApp {
     }
 
     fn normalize_loaded_project(&mut self) {
+        if self.project.project_uuid.is_nil() {
+            self.project.project_uuid = default_project_uuid();
+        }
+
         let valid_ids: BTreeSet<u64> = self.project.objects.iter().map(|o| o.id).collect();
 
         self.project.objects.retain(|obj| {
@@ -1479,47 +1493,44 @@ impl AutoMateApp {
         }
     }
 
-    fn save_project_to_path(&mut self, path: &Path) -> Result<(), String> {
-        match serde_json::to_vec_pretty(&self.project) {
-            Ok(project_payload) => {
-                let mut archive_data = Vec::new();
-                let mut zip = ZipWriter::new(Cursor::new(&mut archive_data));
-                let options = SimpleFileOptions::default();
+    fn project_dirs() -> Option<ProjectDirs> {
+        ProjectDirs::from("com", "AutoMate", "BASStudio")
+    }
 
-                if zip.start_file("project.json", options).is_err()
-                    || zip.write_all(&project_payload).is_err()
-                {
-                    return Err("Save failed: unable to write project.json".to_string());
-                }
+    fn autosave_fallback_path(&self) -> Option<PathBuf> {
+        let dirs = Self::project_dirs()?;
+        let autosave_dir = dirs.data_local_dir().join("autosave");
+        fs::create_dir_all(&autosave_dir).ok()?;
+        Some(autosave_dir.join(format!("{}-autosave.m8", self.project.project_uuid)))
+    }
 
-                if let (Some(name), Some(bytes)) =
-                    (&self.project.overview_image, &self.overview_image_bytes)
-                {
-                    if zip.start_file(format!("assets/{name}"), options).is_ok() {
-                        let _ = zip.write_all(bytes);
-                    }
-                }
+    fn save_project_to_path(&mut self, path: &Path) -> Result<(), AppIoError> {
+        let project_payload = serde_json::to_vec_pretty(&self.project)?;
+        let mut archive_data = Vec::new();
+        let mut zip = ZipWriter::new(Cursor::new(&mut archive_data));
+        let options = SimpleFileOptions::default();
 
-                if let (Some(name), Some(bytes)) =
-                    (&self.project.overlay_pdf, &self.overlay_pdf_bytes)
-                {
-                    if zip.start_file(format!("assets/{name}"), options).is_ok() {
-                        let _ = zip.write_all(bytes);
-                    }
-                }
+        zip.start_file("project.json", options)?;
+        zip.write_all(&project_payload)?;
 
-                if zip.finish().is_err() {
-                    return Err("Save failed: unable to finish archive".to_string());
-                }
-
-                Self::obfuscate(&mut archive_data);
-                fs::write(path, archive_data).map_err(|e| format!("Save failed: {e}"))?;
-                self.project_path = Some(path.to_path_buf());
-                self.last_autosave_at = Instant::now();
-                Ok(())
-            }
-            Err(e) => Err(format!("Serialization failed: {e}")),
+        if let (Some(name), Some(bytes)) =
+            (&self.project.overview_image, &self.overview_image_bytes)
+        {
+            zip.start_file(format!("assets/{name}"), options)?;
+            zip.write_all(bytes)?;
         }
+
+        if let (Some(name), Some(bytes)) = (&self.project.overlay_pdf, &self.overlay_pdf_bytes) {
+            zip.start_file(format!("assets/{name}"), options)?;
+            zip.write_all(bytes)?;
+        }
+
+        zip.finish()?;
+        Self::obfuscate(&mut archive_data);
+        fs::write(path, archive_data)?;
+        self.project_path = Some(path.to_path_buf());
+        self.last_autosave_at = Instant::now();
+        Ok(())
     }
 
     fn save_project(&mut self) {
@@ -1532,7 +1543,7 @@ impl AutoMateApp {
         if let Some(path) = path {
             match self.save_project_to_path(&path) {
                 Ok(_) => self.status = format!("Saved {}", path.display()),
-                Err(e) => self.status = e,
+                Err(e) => self.status = e.to_string(),
             }
         }
     }
@@ -1542,10 +1553,18 @@ impl AutoMateApp {
         if self.last_autosave_at.elapsed().as_secs() < interval {
             return;
         }
-        let Some(path) = self.project_path.clone() else {
+
+        let path = self
+            .project_path
+            .clone()
+            .or_else(|| self.autosave_fallback_path());
+
+        let Some(path) = path else {
             self.last_autosave_at = Instant::now();
+            self.status = "Autosave skipped: no writable autosave directory".to_string();
             return;
         };
+
         match self.save_project_to_path(&path) {
             Ok(_) => self.status = format!("Autosaved {}", path.display()),
             Err(e) => self.status = format!("Autosave failed: {e}"),
@@ -1569,8 +1588,9 @@ impl AutoMateApp {
             .map(|(kind, count)| format!("{} {}", kind.label(), count))
             .join(", ");
         let body = format!(
-            "# Proposal Summary\n\nProject: {}\n\nExported: {}\n\n## Metadata\n- Client: {}\n- Location: {}\n- Proposal #: {}\n- Revision: {}\n- Bid Date: {}\n- Prepared By: {}\n\n## Scope\n{}\n\n## Assumptions\n{}\n\n## Exclusions\n{}\n\n## System Mix\n- {}\n\n## Estimated Hours\n- Engineering: {:.1} h\n- Graphics/Submittals: {:.1} h\n- Commissioning: {:.1} h\n- Custom Lines: {:.1} h\n- Overhead / Risk: {:.1} h\n- **Total: {:.1} h**\n",
+            "# Proposal Summary\n\nProject: {}\n\nProject UUID: {}\nExported: {}\n\n## Metadata\n- Client: {}\n- Location: {}\n- Proposal #: {}\n- Revision: {}\n- Bid Date: {}\n- Prepared By: {}\n\n## Scope\n{}\n\n## Assumptions\n{}\n\n## Exclusions\n{}\n\n## System Mix\n- {}\n\n## Estimated Hours\n- Engineering: {:.1} h\n- Graphics/Submittals: {:.1} h\n- Commissioning: {:.1} h\n- Custom Lines: {:.1} h\n- Overhead / Risk: {:.1} h\n- **Total: {:.1} h**\n",
             self.project.name,
+            self.project.project_uuid,
             exported_at,
             p.client_name,
             p.project_location,
@@ -1633,67 +1653,62 @@ impl AutoMateApp {
         }
     }
 
+    fn load_project_from_path(
+        &mut self,
+        path: &Path,
+        ctx: &egui::Context,
+    ) -> Result<(), AppIoError> {
+        let mut content = fs::read(path)?;
+        Self::obfuscate(&mut content);
+        let reader = Cursor::new(content);
+        let mut archive = ZipArchive::new(reader)?;
+
+        let mut project_json = String::new();
+        archive
+            .by_name("project.json")?
+            .read_to_string(&mut project_json)?;
+
+        self.project = serde_json::from_str::<Project>(&project_json)?;
+        self.overview_image_bytes = None;
+        self.overlay_pdf_bytes = None;
+        self.overview_texture = None;
+        self.overlay_texture = None;
+
+        if let Some(name) = &self.project.overview_image {
+            if let Ok(mut file) = archive.by_name(&format!("assets/{name}")) {
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                self.overview_image_bytes = Some(bytes);
+                self.refresh_overview_texture(ctx);
+            }
+        }
+
+        if let Some(name) = &self.project.overlay_pdf {
+            if let Ok(mut file) = archive.by_name(&format!("assets/{name}")) {
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                self.overlay_pdf_bytes = Some(bytes);
+            }
+        }
+
+        self.project_path = Some(path.to_path_buf());
+        self.normalize_loaded_project();
+        self.selected_object = self.project.objects.first().map(|o| o.id);
+        self.last_autosave_at = Instant::now();
+        self.overlay_undo_stack.clear();
+        self.overlay_redo_stack.clear();
+        self.pending_overlay_drop = None;
+
+        Ok(())
+    }
+
     fn load_project(&mut self, ctx: &egui::Context) {
         if let Some(path) = FileDialog::new()
             .add_filter("M8 Project", &["m8"])
             .pick_file()
         {
-            match fs::read(&path) {
-                Ok(mut content) => {
-                    Self::obfuscate(&mut content);
-                    let reader = Cursor::new(content);
-                    match ZipArchive::new(reader) {
-                        Ok(mut archive) => {
-                            let mut project_json = String::new();
-                            if let Ok(mut file) = archive.by_name("project.json") {
-                                let _ = file.read_to_string(&mut project_json);
-                            }
-
-                            match serde_json::from_str::<Project>(&project_json) {
-                                Ok(project) => {
-                                    self.project = project;
-                                    self.overview_image_bytes = None;
-                                    self.overlay_pdf_bytes = None;
-                                    self.overview_texture = None;
-                                    self.overlay_texture = None;
-
-                                    if let Some(name) = &self.project.overview_image {
-                                        if let Ok(mut file) =
-                                            archive.by_name(&format!("assets/{name}"))
-                                        {
-                                            let mut bytes = Vec::new();
-                                            let _ = file.read_to_end(&mut bytes);
-                                            self.overview_image_bytes = Some(bytes);
-                                            self.refresh_overview_texture(ctx);
-                                        }
-                                    }
-
-                                    if let Some(name) = &self.project.overlay_pdf {
-                                        if let Ok(mut file) =
-                                            archive.by_name(&format!("assets/{name}"))
-                                        {
-                                            let mut bytes = Vec::new();
-                                            let _ = file.read_to_end(&mut bytes);
-                                            self.overlay_pdf_bytes = Some(bytes);
-                                        }
-                                    }
-
-                                    self.project_path = Some(path.clone());
-                                    self.normalize_loaded_project();
-                                    self.status = format!("Loaded {}", path.display());
-                                    self.selected_object =
-                                        self.project.objects.first().map(|o| o.id);
-                                    self.last_autosave_at = Instant::now();
-                                    self.overlay_undo_stack.clear();
-                                    self.overlay_redo_stack.clear();
-                                    self.pending_overlay_drop = None;
-                                }
-                                Err(e) => self.status = format!("Parse failed: {e}"),
-                            }
-                        }
-                        Err(e) => self.status = format!("Load failed: {e}"),
-                    }
-                }
+            match self.load_project_from_path(&path, ctx) {
+                Ok(_) => self.status = format!("Loaded {}", path.display()),
                 Err(e) => self.status = format!("Load failed: {e}"),
             }
         }
@@ -1827,6 +1842,7 @@ impl AutoMateApp {
                 self.project.proposal.proposal_number
             ));
             ui.label(format!("Total Objects: {}", self.project.objects.len()));
+            ui.small(format!("Project ID: {}", self.project.project_uuid));
         });
     }
 
@@ -1922,34 +1938,6 @@ impl AutoMateApp {
 
     fn template_is_archived(template_name: &str) -> bool {
         template_name.to_ascii_lowercase().contains("archive")
-    }
-
-    fn template_for_object(&self, object_id: u64) -> Option<&EquipmentTemplate> {
-        let eq = self.project.objects.iter().find(|o| o.id == object_id)?;
-        if eq.object_type != ObjectType::Equipment || eq.template_name.is_empty() {
-            return None;
-        }
-        self.project
-            .templates
-            .iter()
-            .find(|t| t.name == eq.template_name)
-    }
-
-    fn sync_equipment_from_template(&mut self, object_id: u64) {
-        let Some(template) = self.template_for_object(object_id).cloned() else {
-            return;
-        };
-        if let Some(eq_obj) = self.project.objects.iter_mut().find(|o| o.id == object_id) {
-            if !eq_obj.equipment_type_override {
-                eq_obj.equipment_type = template.equipment_type;
-            }
-            if eq_obj.equipment_tag.trim().is_empty() {
-                eq_obj.equipment_tag = format!("{}-{}", eq_obj.equipment_type, object_id);
-            }
-            if !eq_obj.hours_override {
-                eq_obj.hours_override_mode = template.hour_mode;
-            }
-        }
     }
 
     fn object_node(&mut self, ui: &mut Ui, id: u64) {
@@ -2227,7 +2215,6 @@ impl AutoMateApp {
                         });
 
                         ui.checkbox(&mut self.show_archived_templates, "Show archived templates");
-                        let before_template = obj.template_name.clone();
                         egui::ComboBox::from_label("Point Template")
                             .selected_text(if obj.template_name.is_empty() {
                                 "Select template"
@@ -2235,7 +2222,7 @@ impl AutoMateApp {
                                 &obj.template_name
                             })
                             .show_ui(ui, |ui| {
-                                for t in &self.user_templates {
+                                for t in &self.project.templates {
                                     if !self.show_archived_templates
                                         && Self::template_is_archived(&t.name)
                                     {

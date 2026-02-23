@@ -30,14 +30,20 @@ A Rust desktop prototype for data-driven BAS estimating and submittal workflows.
 - **Project data lifecycle:** save/load obfuscated `.m8` bundles (ZIP + JSON + assets), autosave, markdown proposal export.
 - **Drawings overlay:** PDF/image-backed canvas with drag/drop tokens, route lines, undo/redo, and object-linked nodes.
 
+## Crates integrated in this iteration
+
+- `chrono`: readable local timestamps in proposal exports.
+- `itertools`: concise join logic for object-mix summaries in exported markdown.
+- `uuid`: stable project identity (`project_uuid`) for autosave naming and cross-file traceability.
+- `directories`: OS-native autosave fallback directory for unsaved projects.
+- `thiserror`: typed I/O/serialization/archive errors for cleaner save/load flow.
+
 ## Crate adoption opportunities
 
 High-value public crates that can be integrated next:
 
-- `uuid` for globally unique IDs across merged project files.
 - `tracing` + `tracing-subscriber` for structured diagnostics and performance telemetry.
-- `anyhow` / `thiserror` for cleaner error propagation and typed app errors.
-- `directories` for OS-native app config, autosave, and cache locations.
+- `anyhow` for higher-level context-rich error propagation in command-style workflows.
 - `rayon` for parallel heavy operations (PDF rasterization, large template expansions).
 - `strum` for enum iteration/labels to reduce UI boilerplate around object and point types.
 - `schemars` to generate JSON schema for project/template files and improve compatibility checks.
