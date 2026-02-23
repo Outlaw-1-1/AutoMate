@@ -1,13 +1,15 @@
+use chrono::Local;
 use eframe::{
     egui::{self, menu, Align2, Color32, FontFamily, FontId, RichText, Sense, TextureHandle, Ui},
     epaint::{Mesh, Shadow, Vertex},
     App, CreationContext, Frame, NativeOptions,
 };
+use itertools::Itertools;
 use pdfium_render::prelude::*;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     io::{Cursor, Read, Write},
     path::{Path, PathBuf},
@@ -490,6 +492,8 @@ struct AutoMateApp {
     pending_overlay_drop: Option<(ObjectType, [f32; 2])>,
     show_adjustment_popup: bool,
     left_sidebar_collapsed: bool,
+    object_search_query: String,
+    show_archived_templates: bool,
 }
 
 impl AutoMateApp {
@@ -522,6 +526,8 @@ impl AutoMateApp {
             pending_overlay_drop: None,
             show_adjustment_popup: false,
             left_sidebar_collapsed: false,
+            object_search_query: String::new(),
+            show_archived_templates: false,
         }
     }
 
@@ -842,7 +848,14 @@ impl AutoMateApp {
     fn sanitize_asset_name(path: &Path) -> String {
         path.file_name()
             .and_then(|name| name.to_str())
-            .map(|name| name.replace(' ', "_"))
+            .map(|name| {
+                name.chars()
+                    .map(|ch| match ch {
+                        'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' => ch,
+                        _ => '_',
+                    })
+                    .collect::<String>()
+            })
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "asset.bin".to_string())
     }
@@ -1437,9 +1450,16 @@ impl AutoMateApp {
         };
         let p = &self.project.proposal;
         let (eng, gfx, cx, custom, overhead, total) = self.estimate_hours();
+        let exported_at = Local::now().format("%Y-%m-%d %H:%M").to_string();
+        let object_mix = self
+            .object_counts()
+            .into_iter()
+            .map(|(kind, count)| format!("{} {}", kind.label(), count))
+            .join(", ");
         let body = format!(
-            "# Proposal Summary\n\nProject: {}\n\n## Metadata\n- Client: {}\n- Location: {}\n- Proposal #: {}\n- Revision: {}\n- Bid Date: {}\n- Prepared By: {}\n\n## Scope\n{}\n\n## Assumptions\n{}\n\n## Exclusions\n{}\n\n## Estimated Hours\n- Engineering: {:.1} h\n- Graphics/Submittals: {:.1} h\n- Commissioning: {:.1} h\n- Custom Lines: {:.1} h\n- Overhead / Risk: {:.1} h\n- **Total: {:.1} h**\n",
+            "# Proposal Summary\n\nProject: {}\n\nExported: {}\n\n## Metadata\n- Client: {}\n- Location: {}\n- Proposal #: {}\n- Revision: {}\n- Bid Date: {}\n- Prepared By: {}\n\n## Scope\n{}\n\n## Assumptions\n{}\n\n## Exclusions\n{}\n\n## System Mix\n- {}\n\n## Estimated Hours\n- Engineering: {:.1} h\n- Graphics/Submittals: {:.1} h\n- Commissioning: {:.1} h\n- Custom Lines: {:.1} h\n- Overhead / Risk: {:.1} h\n- **Total: {:.1} h**\n",
             self.project.name,
+            exported_at,
             p.client_name,
             p.project_location,
             p.proposal_number,
@@ -1449,6 +1469,7 @@ impl AutoMateApp {
             p.scope_summary,
             p.assumptions,
             p.exclusions,
+            object_mix,
             eng,
             gfx,
             cx,
@@ -1716,23 +1737,79 @@ impl AutoMateApp {
         }
         self.project_overview(ui);
         ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("Search");
+            ui.text_edit_singleline(&mut self.object_search_query);
+        });
         if ui.button("➕ Building").clicked() {
             self.add_object(ObjectType::Building, None);
         }
 
         egui::ScrollArea::both().show(ui, |ui| {
-            let roots: Vec<u64> = self
+            let query = self.object_search_query.trim();
+            let roots = self.filtered_root_ids(query);
+            for root in roots {
+                self.object_node(ui, root);
+                ui.add_space(6.0);
+            }
+        });
+    }
+
+    fn object_matches_query(&self, obj: &BasObject, query: &str) -> bool {
+        if query.is_empty() {
+            return true;
+        }
+        let haystacks = [
+            obj.name.as_str(),
+            obj.equipment_type.as_str(),
+            obj.equipment_tag.as_str(),
+            obj.template_name.as_str(),
+        ];
+        haystacks.into_iter().any(|text| {
+            !text.is_empty()
+                && text
+                    .to_ascii_lowercase()
+                    .contains(&query.to_ascii_lowercase())
+        })
+    }
+
+    fn filtered_root_ids(&self, query: &str) -> Vec<u64> {
+        if query.is_empty() {
+            return self
                 .project
                 .objects
                 .iter()
                 .filter(|o| o.parent_id.is_none())
                 .map(|o| o.id)
                 .collect();
-            for root in roots {
-                self.object_node(ui, root);
-                ui.add_space(6.0);
+        }
+
+        let object_map: BTreeMap<u64, &BasObject> =
+            self.project.objects.iter().map(|o| (o.id, o)).collect();
+        let mut visible_ids = HashSet::new();
+
+        for obj in &self.project.objects {
+            if self.object_matches_query(obj, query) {
+                let mut current = Some(obj.id);
+                while let Some(id) = current {
+                    if !visible_ids.insert(id) {
+                        break;
+                    }
+                    current = object_map.get(&id).and_then(|o| o.parent_id);
+                }
             }
-        });
+        }
+
+        self.project
+            .objects
+            .iter()
+            .filter(|o| o.parent_id.is_none() && visible_ids.contains(&o.id))
+            .map(|o| o.id)
+            .collect()
+    }
+
+    fn template_is_archived(template_name: &str) -> bool {
+        template_name.to_ascii_lowercase().contains("archive")
     }
 
     fn object_node(&mut self, ui: &mut Ui, id: u64) {
@@ -1876,7 +1953,7 @@ impl AutoMateApp {
                     eq_obj.equipment_tag = format!("{}-{}", template.equipment_type, obj_id);
                 }
             }
-            let existing_points: Vec<String> = self
+            let existing_points: HashSet<String> = self
                 .project
                 .objects
                 .iter()
@@ -1988,6 +2065,7 @@ impl AutoMateApp {
                             ui.text_edit_singleline(&mut obj.model);
                         });
 
+                        ui.checkbox(&mut self.show_archived_templates, "Show archived templates");
                         egui::ComboBox::from_label("Point Template")
                             .selected_text(if obj.template_name.is_empty() {
                                 "Select template"
@@ -1996,6 +2074,11 @@ impl AutoMateApp {
                             })
                             .show_ui(ui, |ui| {
                                 for t in &self.project.templates {
+                                    if !self.show_archived_templates
+                                        && Self::template_is_archived(&t.name)
+                                    {
+                                        continue;
+                                    }
                                     ui.selectable_value(
                                         &mut obj.template_name,
                                         t.name.clone(),
