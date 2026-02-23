@@ -794,10 +794,6 @@ impl AutoMateApp {
             })
     }
 
-    fn auth_shell_frame() -> egui::Frame {
-        Self::surface_panel().outer_margin(egui::Margin::same(0.0))
-    }
-
     fn card_frame() -> egui::Frame {
         egui::Frame::default()
             .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 4))
