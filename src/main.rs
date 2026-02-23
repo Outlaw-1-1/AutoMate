@@ -611,21 +611,21 @@ impl AutoMateApp {
             .add(egui::Shape::mesh(mesh));
 
         let painter = ctx.layer_painter(egui::LayerId::background());
-        let primary = egui::pos2(rect.right() - 240.0, rect.top() + 220.0);
+        let primary = egui::pos2(rect.right() - 250.0, rect.top() + 230.0);
         painter.text(
             primary,
             Align2::CENTER_CENTER,
             "M8",
-            FontId::proportional(280.0),
-            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 18),
+            FontId::proportional(320.0),
+            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 42),
         );
-        let secondary = egui::pos2(rect.left() + 200.0, rect.bottom() - 160.0);
+        let secondary = egui::pos2(rect.left() + 230.0, rect.bottom() - 190.0);
         painter.text(
             secondary,
             Align2::CENTER_CENTER,
             "M8",
-            FontId::proportional(220.0),
-            Color32::from_rgba_unmultiplied(76, 129, 255, 14),
+            FontId::proportional(250.0),
+            Color32::from_rgba_unmultiplied(76, 129, 255, 34),
         );
     }
 
@@ -662,7 +662,13 @@ impl AutoMateApp {
             .frame(egui::Frame::none().fill(Color32::TRANSPARENT))
             .show(ctx, |ui| {
                 ui.centered_and_justified(|ui| {
-                    self.draw_mark(ui);
+                    ui.label(
+                        RichText::new("M8")
+                            .family(FontFamily::Proportional)
+                            .size(128.0)
+                            .strong()
+                            .color(self.accent()),
+                    );
                 });
             });
 
@@ -673,12 +679,10 @@ impl AutoMateApp {
 
     fn login_screen(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let max_h = ui.available_height() * 0.30;
-            ui.vertical_centered(|ui| {
-                ui.add_space((ui.available_height() - max_h).max(0.0) * 0.45);
+            ui.centered_and_justified(|ui| {
                 Self::surface_panel().show(ui, |ui| {
-                    ui.set_width(760.0);
-                    ui.set_height(max_h);
+                    ui.set_width(ui.available_width().min(760.0));
+                    ui.set_height(ui.available_height().min(320.0));
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             self.draw_mark(ui);
@@ -1412,7 +1416,7 @@ impl AutoMateApp {
                             .color(Color32::from_rgba_unmultiplied(215, 215, 220, 190)),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add_sized([28.0, 22.0], egui::Button::new("✕")).clicked() {
+                        if ui.add_sized([28.0, 22.0], egui::Button::new("x")).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                         if ui
