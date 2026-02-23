@@ -73,8 +73,8 @@ enum AppScreen {
 }
 
 const SPLASH_WINDOW_SIZE: f32 = 200.0;
-const LOGIN_WINDOW_DEFAULT_SIZE: [f32; 2] = [1040.0, 680.0];
-const LOGIN_WINDOW_MIN_SIZE: [f32; 2] = [860.0, 540.0];
+const LOGIN_WINDOW_DEFAULT_SIZE: [f32; 2] = [1200.0, 760.0];
+const LOGIN_WINDOW_MIN_SIZE: [f32; 2] = [960.0, 620.0];
 const STUDIO_WINDOW_SIZE: [f32; 2] = [1600.0, 920.0];
 
 #[derive(Debug, Error)]
@@ -970,72 +970,34 @@ impl AutoMateApp {
 
     fn login_screen(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(Color32::TRANSPARENT))
+            .frame(egui::Frame::default().fill(Color32::from_rgb(14, 19, 30)))
             .show(ctx, |ui| {
-                ui.centered_and_justified(|ui| {
-                    let shell_size = vec2(
-                        ui.available_width().min(980.0),
-                        ui.available_height().min(620.0),
-                    );
+                ui.vertical_centered(|ui| {
+                    ui.add_space((ui.available_height() * 0.12).max(18.0));
 
-                    Self::auth_shell_frame().show(ui, |ui| {
-                        ui.set_min_size(shell_size);
+                    let card_width = ui.available_width().min(900.0);
+                    Self::surface_panel().show(ui, |ui| {
+                        ui.set_width(card_width);
 
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("Login").strong().size(13.0));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let drag_handle = ui.add(
-                                    egui::Label::new(
-                                        RichText::new("⇕ Drag Window")
-                                            .size(12.0)
-                                            .color(Color32::from_gray(180)),
-                                    )
-                                    .sense(Sense::click_and_drag()),
-                                );
-                                if drag_handle.dragged() {
-                                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                                }
-                            });
-                        });
-
-                        ui.separator();
-
-                        let compact_layout = ui.available_width() < 920.0;
-                        if compact_layout {
-                            ui.vertical_centered(|ui| {
+                        ui.columns(2, |columns| {
+                            columns[0].vertical_centered(|ui| {
                                 self.draw_mark(ui);
-                                ui.label(RichText::new("Technical Application Login").size(18.0).strong());
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new("Technical Application Login")
+                                        .size(24.0)
+                                        .strong(),
+                                );
+                                ui.label(
+                                    RichText::new(
+                                        "Secure sign-in for BAS estimating, drawings, and controls engineering.",
+                                    )
+                                    .size(14.0)
+                                    .color(Color32::from_gray(196)),
+                                );
                             });
-                            ui.add_space(6.0);
-                            ui.label(
-                                RichText::new(
-                                    "Secure sign-in for BAS estimating, drawings, and controls engineering.",
-                                )
-                                .size(13.0)
-                                .color(Color32::from_gray(190)),
-                            );
-                            ui.add_space(10.0);
-                            self.render_login_form(ui);
-                        } else {
-                            ui.columns(2, |columns| {
-                                columns[0].vertical_centered(|ui| {
-                                    self.draw_mark(ui);
-                                    ui.label(
-                                        RichText::new("Technical Application Login")
-                                            .size(18.0)
-                                            .strong(),
-                                    );
-                                    ui.label(
-                                        RichText::new(
-                                            "Secure sign-in for BAS estimating, drawings, and controls engineering.",
-                                        )
-                                        .size(13.0)
-                                        .color(Color32::from_gray(190)),
-                                    );
-                                });
-                                self.render_login_form(&mut columns[1]);
-                            });
-                        }
+                            self.render_login_form(&mut columns[1]);
+                        });
                     });
                         });
                     },
