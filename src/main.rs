@@ -280,16 +280,11 @@ impl Default for EstimatorSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 enum HourCalculationMode {
+    #[default]
     StaticByEquipment,
     PointsBased,
-}
-
-impl Default for HourCalculationMode {
-    fn default() -> Self {
-        Self::StaticByEquipment
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,8 +302,9 @@ struct EquipmentTemplate {
     commissioning_hours_per_point: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 enum PointKind {
+    #[default]
     AI,
     DI,
     AO,
@@ -345,12 +341,6 @@ impl PointKind {
             PointKind::DO,
             PointKind::NetworkX,
         ]
-    }
-}
-
-impl Default for PointKind {
-    fn default() -> Self {
-        Self::AI
     }
 }
 
@@ -3238,7 +3228,7 @@ impl AutoMateApp {
             self.dragging_tree_object = None;
         }
 
-        if let Some((kind, pos)) = self.pending_overlay_drop.clone() {
+        if let Some((kind, pos)) = self.pending_overlay_drop {
             let mut open = true;
             egui::Window::new("Bind Token to Object")
                 .open(&mut open)
