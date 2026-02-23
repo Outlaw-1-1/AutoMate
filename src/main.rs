@@ -740,7 +740,8 @@ impl AutoMateApp {
     }
 
     fn apply_recommended_settings(&mut self) {
-        self.project.settings.autosave_minutes = self.project.settings.autosave_minutes.min(15);
+        self.project.settings.autosave_minutes =
+            self.project.settings.autosave_minutes.clamp(1, 15);
         self.project.settings.ui_scale = self.project.settings.ui_scale.clamp(0.95, 1.25);
         if self.project.settings.company_name.trim().is_empty() {
             self.project.settings.company_name = "AutoMate Controls".to_string();
