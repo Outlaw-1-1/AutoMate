@@ -280,16 +280,11 @@ impl Default for EstimatorSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 enum HourCalculationMode {
+    #[default]
     StaticByEquipment,
     PointsBased,
-}
-
-impl Default for HourCalculationMode {
-    fn default() -> Self {
-        Self::StaticByEquipment
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,8 +302,9 @@ struct EquipmentTemplate {
     commissioning_hours_per_point: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 enum PointKind {
+    #[default]
     AI,
     DI,
     AO,
@@ -345,12 +341,6 @@ impl PointKind {
             PointKind::DO,
             PointKind::NetworkX,
         ]
-    }
-}
-
-impl Default for PointKind {
-    fn default() -> Self {
-        Self::AI
     }
 }
 
@@ -750,7 +740,8 @@ impl AutoMateApp {
     }
 
     fn apply_recommended_settings(&mut self) {
-        self.project.settings.autosave_minutes = self.project.settings.autosave_minutes.min(15);
+        self.project.settings.autosave_minutes =
+            self.project.settings.autosave_minutes.clamp(1, 15);
         self.project.settings.ui_scale = self.project.settings.ui_scale.clamp(0.95, 1.25);
         if self.project.settings.company_name.trim().is_empty() {
             self.project.settings.company_name = "AutoMate Controls".to_string();
@@ -3238,7 +3229,7 @@ impl AutoMateApp {
             self.dragging_tree_object = None;
         }
 
-        if let Some((kind, pos)) = self.pending_overlay_drop.clone() {
+        if let Some((kind, pos)) = self.pending_overlay_drop {
             let mut open = true;
             egui::Window::new("Bind Token to Object")
                 .open(&mut open)
