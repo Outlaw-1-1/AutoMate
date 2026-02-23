@@ -21,6 +21,27 @@ A Rust desktop prototype for data-driven BAS estimating and submittal workflows.
   - Drag controller/equipment tokens onto overlay canvas.
   - Draw line segments on overlay for routing/markup.
 
+## Feature inventory (current)
+
+- **Studio shell + UX:** splash/login/studio flow, custom title bar, toolbar menus, glass panels, adaptive UI scale.
+- **BAS object modeling:** hierarchical building/controller/equipment/point tree, reparenting, duplication, context actions.
+- **Template-driven engineering:** equipment templates with point generation and dual hour modes (static / points-based).
+- **Estimating:** calibrated labor model with complexity/renovation/integration factors and QA/PM/risk overhead.
+- **Project data lifecycle:** save/load obfuscated `.m8` bundles (ZIP + JSON + assets), autosave, markdown proposal export.
+- **Drawings overlay:** PDF/image-backed canvas with drag/drop tokens, route lines, undo/redo, and object-linked nodes.
+
+## Crate adoption opportunities
+
+High-value public crates that can be integrated next:
+
+- `uuid` for globally unique IDs across merged project files.
+- `tracing` + `tracing-subscriber` for structured diagnostics and performance telemetry.
+- `anyhow` / `thiserror` for cleaner error propagation and typed app errors.
+- `directories` for OS-native app config, autosave, and cache locations.
+- `rayon` for parallel heavy operations (PDF rasterization, large template expansions).
+- `strum` for enum iteration/labels to reduce UI boilerplate around object and point types.
+- `schemars` to generate JSON schema for project/template files and improve compatibility checks.
+
 ## Run
 
 ```bash
