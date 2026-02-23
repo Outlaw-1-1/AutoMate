@@ -118,6 +118,8 @@ struct BasObject {
     controller_license: String,
     #[serde(default)]
     template_name: String,
+    #[serde(default)]
+    point_kind: PointKind,
     property_groups: Vec<PropertyGroup>,
 }
 
@@ -236,7 +238,8 @@ impl Default for HourCalculationMode {
 struct EquipmentTemplate {
     name: String,
     equipment_type: String,
-    points: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_template_points")]
+    points: Vec<TemplatePoint>,
     hour_mode: HourCalculationMode,
     engineering_hours: f32,
     engineering_hours_per_point: f32,
@@ -246,16 +249,93 @@ struct EquipmentTemplate {
     commissioning_hours_per_point: f32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+enum PointKind {
+    AI,
+    DI,
+    AO,
+    DO,
+    NetworkX,
+}
+
+impl PointKind {
+    fn label(&self) -> &'static str {
+        match self {
+            PointKind::AI => "AI",
+            PointKind::DI => "DI",
+            PointKind::AO => "AO",
+            PointKind::DO => "DO",
+            PointKind::NetworkX => "Network(X)",
+        }
+    }
+
+    fn all() -> [PointKind; 5] {
+        [
+            PointKind::AI,
+            PointKind::DI,
+            PointKind::AO,
+            PointKind::DO,
+            PointKind::NetworkX,
+        ]
+    }
+}
+
+impl Default for PointKind {
+    fn default() -> Self {
+        Self::AI
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct TemplatePoint {
+    name: String,
+    #[serde(default)]
+    kind: PointKind,
+}
+
+impl TemplatePoint {
+    fn ai(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            kind: PointKind::AI,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum TemplatePointSerde {
+    Legacy(String),
+    Rich(TemplatePoint),
+}
+
+fn deserialize_template_points<'de, D>(deserializer: D) -> Result<Vec<TemplatePoint>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Vec::<TemplatePointSerde>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .map(|item| match item {
+            TemplatePointSerde::Legacy(name) => TemplatePoint {
+                name,
+                kind: PointKind::AI,
+            },
+            TemplatePointSerde::Rich(point) => point,
+        })
+        .collect())
+}
+
 impl Default for EquipmentTemplate {
     fn default() -> Self {
         Self {
             name: "VAV Typical".to_string(),
             equipment_type: "VAV".to_string(),
             points: vec![
-                "Space Temp".to_string(),
-                "Discharge Temp".to_string(),
-                "Damper Cmd".to_string(),
-                "Airflow".to_string(),
+                TemplatePoint::ai("Space Temp"),
+                TemplatePoint::ai("Discharge Temp"),
+                TemplatePoint::ai("Damper Cmd"),
+                TemplatePoint::ai("Airflow"),
             ],
             hour_mode: HourCalculationMode::StaticByEquipment,
             engineering_hours: 2.0,
@@ -303,6 +383,7 @@ impl Default for Project {
             controller_type: String::new(),
             controller_license: String::new(),
             template_name: String::new(),
+            point_kind: PointKind::AI,
             property_groups: vec![],
         };
 
@@ -320,12 +401,12 @@ impl Default for Project {
                     name: "AHU Typical".to_string(),
                     equipment_type: "AHU".to_string(),
                     points: vec![
-                        "Space Temp".to_string(),
-                        "Supply Temp".to_string(),
-                        "Return Temp".to_string(),
-                        "Static Pressure".to_string(),
-                        "Fan Cmd".to_string(),
-                        "Filter DP".to_string(),
+                        TemplatePoint::ai("Space Temp"),
+                        TemplatePoint::ai("Supply Temp"),
+                        TemplatePoint::ai("Return Temp"),
+                        TemplatePoint::ai("Static Pressure"),
+                        TemplatePoint::ai("Fan Cmd"),
+                        TemplatePoint::ai("Filter DP"),
                     ],
                     hour_mode: HourCalculationMode::StaticByEquipment,
                     engineering_hours: 5.0,
@@ -339,11 +420,11 @@ impl Default for Project {
                     name: "Boiler Plant".to_string(),
                     equipment_type: "Boiler".to_string(),
                     points: vec![
-                        "Space Temp".to_string(),
-                        "Enable".to_string(),
-                        "Water Temp".to_string(),
-                        "Status".to_string(),
-                        "Alarm".to_string(),
+                        TemplatePoint::ai("Space Temp"),
+                        TemplatePoint::ai("Enable"),
+                        TemplatePoint::ai("Water Temp"),
+                        TemplatePoint::ai("Status"),
+                        TemplatePoint::ai("Alarm"),
                     ],
                     hour_mode: HourCalculationMode::StaticByEquipment,
                     engineering_hours: 4.0,
@@ -357,12 +438,12 @@ impl Default for Project {
                     name: "Chiller".to_string(),
                     equipment_type: "Chiller".to_string(),
                     points: vec![
-                        "Space Temp".to_string(),
-                        "CHWS Temp".to_string(),
-                        "CHWR Temp".to_string(),
-                        "Run Cmd".to_string(),
-                        "kW".to_string(),
-                        "Fault".to_string(),
+                        TemplatePoint::ai("Space Temp"),
+                        TemplatePoint::ai("CHWS Temp"),
+                        TemplatePoint::ai("CHWR Temp"),
+                        TemplatePoint::ai("Run Cmd"),
+                        TemplatePoint::ai("kW"),
+                        TemplatePoint::ai("Fault"),
                     ],
                     hour_mode: HourCalculationMode::StaticByEquipment,
                     engineering_hours: 5.0,
@@ -788,7 +869,10 @@ impl AutoMateApp {
                 format!("{} (Hours)", name)
             },
             equipment_type: "Custom".to_string(),
-            points: vec!["Space Temp".to_string(), "Template Point".to_string()],
+            points: vec![
+                TemplatePoint::ai("Space Temp"),
+                TemplatePoint::ai("Template Point"),
+            ],
             hour_mode: HourCalculationMode::StaticByEquipment,
             engineering_hours: if line.category == "Engineering" {
                 line.quantity.max(0.0) * line.hours_per_unit.max(0.0)
@@ -818,12 +902,12 @@ impl AutoMateApp {
                 name: "AHU Typical".to_string(),
                 equipment_type: "AHU".to_string(),
                 points: vec![
-                    "Space Temp".to_string(),
-                    "Supply Temp".into(),
-                    "Return Temp".into(),
-                    "Static Pressure".into(),
-                    "Fan Cmd".into(),
-                    "Filter DP".into(),
+                    TemplatePoint::ai("Space Temp"),
+                    TemplatePoint::ai("Supply Temp"),
+                    TemplatePoint::ai("Return Temp"),
+                    TemplatePoint::ai("Static Pressure"),
+                    TemplatePoint::ai("Fan Cmd"),
+                    TemplatePoint::ai("Filter DP"),
                 ],
                 hour_mode: HourCalculationMode::StaticByEquipment,
                 engineering_hours: 5.0,
@@ -837,11 +921,11 @@ impl AutoMateApp {
                 name: "Boiler Plant".to_string(),
                 equipment_type: "Boiler".to_string(),
                 points: vec![
-                    "Space Temp".to_string(),
-                    "Enable".into(),
-                    "Water Temp".into(),
-                    "Status".into(),
-                    "Alarm".into(),
+                    TemplatePoint::ai("Space Temp"),
+                    TemplatePoint::ai("Enable"),
+                    TemplatePoint::ai("Water Temp"),
+                    TemplatePoint::ai("Status"),
+                    TemplatePoint::ai("Alarm"),
                 ],
                 hour_mode: HourCalculationMode::StaticByEquipment,
                 engineering_hours: 4.0,
@@ -855,12 +939,12 @@ impl AutoMateApp {
                 name: "Chiller".to_string(),
                 equipment_type: "Chiller".to_string(),
                 points: vec![
-                    "Space Temp".to_string(),
-                    "CHWS Temp".into(),
-                    "CHWR Temp".into(),
-                    "Run Cmd".into(),
-                    "kW".into(),
-                    "Fault".into(),
+                    TemplatePoint::ai("Space Temp"),
+                    TemplatePoint::ai("CHWS Temp"),
+                    TemplatePoint::ai("CHWR Temp"),
+                    TemplatePoint::ai("Run Cmd"),
+                    TemplatePoint::ai("kW"),
+                    TemplatePoint::ai("Fault"),
                 ],
                 hour_mode: HourCalculationMode::StaticByEquipment,
                 engineering_hours: 5.0,
@@ -874,11 +958,11 @@ impl AutoMateApp {
                 name: "Fan Coil Unit".to_string(),
                 equipment_type: "FCU".to_string(),
                 points: vec![
-                    "Space Temp".to_string(),
-                    "Room Temp".into(),
-                    "Fan Speed".into(),
-                    "Valve Cmd".into(),
-                    "Occupancy".into(),
+                    TemplatePoint::ai("Space Temp"),
+                    TemplatePoint::ai("Room Temp"),
+                    TemplatePoint::ai("Fan Speed"),
+                    TemplatePoint::ai("Valve Cmd"),
+                    TemplatePoint::ai("Occupancy"),
                 ],
                 hour_mode: HourCalculationMode::StaticByEquipment,
                 engineering_hours: 2.5,
@@ -1079,14 +1163,8 @@ impl AutoMateApp {
             controller_type: "Lynxspring Edge".to_string(),
             controller_license: "None".to_string(),
             template_name: String::new(),
-            property_groups: if object_type == ObjectType::Equipment {
-                vec![PropertyGroup {
-                    name: "General".to_string(),
-                    items: vec![],
-                }]
-            } else {
-                vec![]
-            },
+            point_kind: PointKind::AI,
+            property_groups: vec![],
         });
         self.selected_object = Some(id);
     }
@@ -1142,6 +1220,12 @@ impl AutoMateApp {
         self.project
             .overlay_nodes
             .retain(|node| valid_ids.contains(&node.object_id));
+
+        for obj in &mut self.project.objects {
+            if obj.object_type == ObjectType::Equipment {
+                obj.property_groups.clear();
+            }
+        }
 
         let max_id = self.project.objects.iter().map(|o| o.id).max().unwrap_or(0);
         self.project.next_id = self.project.next_id.max(max_id + 1);
@@ -1462,45 +1546,6 @@ impl AutoMateApp {
             );
         });
     }
-
-    fn sync_template_points(&mut self) {
-        let equipment: Vec<(u64, String)> = self
-            .project
-            .objects
-            .iter()
-            .filter(|o| o.object_type == ObjectType::Equipment && !o.template_name.is_empty())
-            .map(|o| (o.id, o.template_name.clone()))
-            .collect();
-        for (eq_id, template_name) in equipment {
-            let Some(template) = self
-                .project
-                .templates
-                .iter()
-                .find(|t| t.name == template_name)
-                .cloned()
-            else {
-                continue;
-            };
-            let existing: BTreeSet<String> = self
-                .project
-                .objects
-                .iter()
-                .filter(|o| o.parent_id == Some(eq_id) && o.object_type == ObjectType::Point)
-                .map(|o| o.name.clone())
-                .collect();
-            for point_name in template.points {
-                if existing.contains(&point_name) {
-                    continue;
-                }
-                self.add_object(ObjectType::Point, Some(eq_id));
-                if let Some(new_obj) = self.project.objects.last_mut() {
-                    new_obj.name = point_name;
-                    new_obj.property_groups.clear();
-                }
-            }
-        }
-    }
-
     fn duplicate_object(&mut self, id: u64) {
         let Some(obj) = self.project.objects.iter().find(|o| o.id == id).cloned() else {
             return;
@@ -1515,7 +1560,14 @@ impl AutoMateApp {
 
     fn project_overview(&mut self, ui: &mut Ui) {
         Self::card_frame().show(ui, |ui| {
+            ui.set_width(ui.available_width());
             ui.label(RichText::new("Project Overview").strong());
+            if let Some(texture) = &self.overview_texture {
+                let w = ui.available_width().max(120.0);
+                let h = (w * 0.42).clamp(90.0, 180.0);
+                ui.add(egui::Image::new(texture).fit_to_exact_size(egui::vec2(w, h)));
+                ui.add_space(4.0);
+            }
             ui.label(format!("Client: {}", self.project.proposal.client_name));
             ui.label(format!(
                 "Location: {}",
@@ -1703,13 +1755,14 @@ impl AutoMateApp {
                 .map(|o| o.name.clone())
                 .collect();
 
-            for point_name in template.points {
-                if existing_points.contains(&point_name) {
+            for point in template.points {
+                if existing_points.contains(&point.name) {
                     continue;
                 }
                 self.add_object(ObjectType::Point, Some(obj_id));
                 if let Some(new_obj) = self.project.objects.last_mut() {
-                    new_obj.name = point_name;
+                    new_obj.name = point.name;
+                    new_obj.point_kind = point.kind;
                     new_obj.property_groups.clear();
                 }
             }
@@ -1826,32 +1879,19 @@ impl AutoMateApp {
                         }
                     }
 
-                    if obj.object_type == ObjectType::Equipment {
+                    if obj.object_type == ObjectType::Point {
                         ui.separator();
-                        for group in &mut obj.property_groups {
-                            egui::CollapsingHeader::new(group.name.as_str())
-                                .default_open(true)
-                                .show(ui, |ui| {
-                                    for item in &mut group.items {
-                                        ui.horizontal(|ui| {
-                                            ui.label(item.key.as_str());
-                                            ui.text_edit_singleline(&mut item.value);
-                                        });
-                                    }
-                                    if ui.button("+ Property").clicked() {
-                                        group.items.push(PropertyItem {
-                                            key: "New".to_string(),
-                                            value: String::new(),
-                                        });
-                                    }
-                                });
-                        }
-                        if ui.button("+ Group").clicked() {
-                            obj.property_groups.push(PropertyGroup {
-                                name: format!("Group {}", obj.property_groups.len() + 1),
-                                items: vec![],
+                        egui::ComboBox::from_label("Point Type")
+                            .selected_text(obj.point_kind.label())
+                            .show_ui(ui, |ui| {
+                                for kind in PointKind::all() {
+                                    ui.selectable_value(
+                                        &mut obj.point_kind,
+                                        kind.clone(),
+                                        kind.label(),
+                                    );
+                                }
                             });
-                        }
                     }
                 });
 
@@ -1904,11 +1944,6 @@ impl AutoMateApp {
                             ui.small(path);
                         }
                     });
-                    if let Some(texture) = &self.overview_texture {
-                        let w = ui.available_width().max(120.0);
-                        let h = (w * 0.42).clamp(90.0, 180.0);
-                        ui.add(egui::Image::new(texture).fit_to_exact_size(egui::vec2(w, h)));
-                    }
                     ui.label("Project Notes");
                     ui.text_edit_multiline(&mut self.project.notes);
                 });
@@ -1960,29 +1995,6 @@ impl AutoMateApp {
         ui.heading("Hours Estimator");
         let (eng, gfx, cx, mut custom_total, overhead, grand_total) = self.estimate_hours();
 
-        Self::card_frame().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Hours Summation").strong());
-                if ui.button("⏰").on_hover_text("Adjustments").clicked() {
-                    self.show_adjustment_popup = true;
-                }
-            });
-            egui::Grid::new("est_grid").num_columns(2).show(ui, |ui| {
-                ui.label("Engineering");
-                ui.label(format!("{eng:.1} h"));
-                ui.end_row();
-                ui.label("Graphics/Submittals");
-                ui.label(format!("{gfx:.1} h"));
-                ui.end_row();
-                ui.label("Commissioning");
-                ui.label(format!("{cx:.1} h"));
-                ui.end_row();
-                ui.label("Custom Lines");
-                ui.label(format!("{custom_total:.1} h"));
-                ui.end_row();
-            });
-        });
-
         if self.show_adjustment_popup {
             egui::Window::new("Hours Adjustments")
                 .open(&mut self.show_adjustment_popup)
@@ -2032,8 +2044,32 @@ impl AutoMateApp {
                 });
         }
 
-        ui.columns(3, |columns| {
+        ui.columns(2, |columns| {
             Self::card_frame().show(&mut columns[0], |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Hours Summation").strong());
+                    if ui.button("⏰").on_hover_text("Adjustments").clicked() {
+                        self.show_adjustment_popup = true;
+                    }
+                });
+                egui::Grid::new("est_grid_details")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        ui.label("Engineering");
+                        ui.label(format!("{eng:.1} h"));
+                        ui.end_row();
+                        ui.label("Graphics/Submittals");
+                        ui.label(format!("{gfx:.1} h"));
+                        ui.end_row();
+                        ui.label("Commissioning");
+                        ui.label(format!("{cx:.1} h"));
+                        ui.end_row();
+                        ui.label("Custom Lines");
+                        ui.label(format!("{custom_total:.1} h"));
+                        ui.end_row();
+                    });
+
+                ui.separator();
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Custom hour lines").strong());
                     if ui.button("+ Add line").clicked() {
@@ -2067,7 +2103,6 @@ impl AutoMateApp {
                             remove_idx = Some(idx);
                         }
                     });
-                    custom_total += line.quantity.max(0.0) * line.hours_per_unit.max(0.0);
                 }
                 if let Some(idx) = remove_idx {
                     self.project.custom_hour_lines.remove(idx);
@@ -2084,14 +2119,12 @@ impl AutoMateApp {
                 let base_total = eng + gfx + cx + custom_total;
                 ui.label(RichText::new(format!("Base Total: {base_total:.1} h")).strong());
                 ui.label(format!("Overhead & Risk: {overhead:.1} h"));
-                ui.label(RichText::new(format!("Final Estimated Hours: {grand_total:.1} h")).strong());
-                ui.small("Calibrated model: direct effort + complexity factors + QA/PM/risk overhead.");
-            });
-
-            Self::card_frame().show(&mut columns[2], |ui| {
-                ui.label(RichText::new("Estimator Notes").strong());
-                ui.label("Use the ⏰ button in Hours Summation to tune adjustment modifiers.");
-                ui.label("Template hour mode can be configured in Template Tool (static or points-based).");
+                ui.label(
+                    RichText::new(format!("Final Estimated Hours: {grand_total:.1} h")).strong(),
+                );
+                ui.small(
+                    "Calibrated model: direct effort + complexity factors + QA/PM/risk overhead.",
+                );
             });
         });
     }
@@ -2103,7 +2136,7 @@ impl AutoMateApp {
             self.project.templates.push(EquipmentTemplate {
                 name: format!("Template {}", self.project.templates.len() + 1),
                 equipment_type: String::new(),
-                points: vec!["New Point".to_string()],
+                points: vec![TemplatePoint::ai("New Point")],
                 hour_mode: HourCalculationMode::StaticByEquipment,
                 engineering_hours: 0.0,
                 engineering_hours_per_point: 0.25,
@@ -2191,9 +2224,20 @@ impl AutoMateApp {
                     for (pidx, point) in template.points.iter_mut().enumerate() {
                         ui.horizontal(|ui| {
                             ui.add_sized(
-                                [ui.available_width() - 34.0, 22.0],
-                                egui::TextEdit::singleline(point),
+                                [ui.available_width() - 190.0, 22.0],
+                                egui::TextEdit::singleline(&mut point.name),
                             );
+                            egui::ComboBox::from_id_source(("point_kind", idx, pidx))
+                                .selected_text(point.kind.label())
+                                .show_ui(ui, |ui| {
+                                    for kind in PointKind::all() {
+                                        ui.selectable_value(
+                                            &mut point.kind,
+                                            kind.clone(),
+                                            kind.label(),
+                                        );
+                                    }
+                                });
                             if ui.button("x").clicked() {
                                 remove_point = Some(pidx);
                             }
@@ -2203,7 +2247,7 @@ impl AutoMateApp {
                         template.points.remove(pidx);
                     }
                     if ui.button("+ Point").clicked() {
-                        template.points.push("New Point".to_string());
+                        template.points.push(TemplatePoint::ai("New Point"));
                     }
                 });
                 ui.add_space(6.0);
@@ -2557,7 +2601,6 @@ impl App for AutoMateApp {
             AppScreen::Login => self.login_screen(ctx),
             AppScreen::Studio => {
                 self.ensure_template_seeded();
-                self.sync_template_points();
                 self.autosave_project();
                 self.titlebar(ctx, _frame);
                 egui::TopBottomPanel::top("toolbar")
