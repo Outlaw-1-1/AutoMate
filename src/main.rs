@@ -52,7 +52,7 @@ enum OverlayTool {
 impl OverlayTool {
     fn label(self) -> &'static str {
         match self {
-            OverlayTool::Route => "Route lines",
+            OverlayTool::Route => "Wire tool",
             OverlayTool::PlaceController => "Place controller",
             OverlayTool::PlaceEquipment => "Place equipment",
         }
@@ -306,6 +306,16 @@ impl PointKind {
         }
     }
 
+    fn icon(&self) -> &'static str {
+        match self {
+            PointKind::AI => "🟢",
+            PointKind::AO => "🟩",
+            PointKind::DI => "🔵",
+            PointKind::DO => "🟦",
+            PointKind::NetworkX => "🧷",
+        }
+    }
+
     fn all() -> [PointKind; 5] {
         [
             PointKind::AI,
@@ -394,7 +404,7 @@ struct Project {
     overlay_pdf: Option<String>,
     overlay_nodes: Vec<OverlayNode>,
     overlay_lines: Vec<OverlayLine>,
-    #[serde(default)]
+    #[serde(skip, default)]
     templates: Vec<EquipmentTemplate>,
     #[serde(default)]
     custom_hour_lines: Vec<HourLine>,
@@ -539,6 +549,9 @@ struct AutoMateApp {
     show_archived_templates: bool,
     collapsed_tree_nodes: HashSet<u64>,
     overlay_tool: OverlayTool,
+    user_templates: Vec<EquipmentTemplate>,
+    overlay_zoom: f32,
+    overlay_pan: egui::Vec2,
 }
 
 impl AutoMateApp {
@@ -574,6 +587,9 @@ impl AutoMateApp {
             show_archived_templates: false,
             collapsed_tree_nodes: HashSet::new(),
             overlay_tool: OverlayTool::Route,
+            user_templates: Self::load_user_templates(),
+            overlay_zoom: 1.0,
+            overlay_pan: egui::Vec2::ZERO,
         }
     }
 
@@ -1007,41 +1023,6 @@ impl AutoMateApp {
         None
     }
 
-    fn to_template(line: &HourLine) -> EquipmentTemplate {
-        let name = line.name.trim();
-        EquipmentTemplate {
-            name: if name.is_empty() {
-                "Custom Hour Template".to_string()
-            } else {
-                format!("{} (Hours)", name)
-            },
-            equipment_type: "Custom".to_string(),
-            points: vec![
-                TemplatePoint::ai("Space Temp"),
-                TemplatePoint::ai("Template Point"),
-            ],
-            hour_mode: HourCalculationMode::StaticByEquipment,
-            engineering_hours: if line.category == "Engineering" {
-                line.quantity.max(0.0) * line.hours_per_unit.max(0.0)
-            } else {
-                0.0
-            },
-            engineering_hours_per_point: 0.0,
-            graphics_hours: if line.category == "Graphics" {
-                line.quantity.max(0.0) * line.hours_per_unit.max(0.0)
-            } else {
-                0.0
-            },
-            graphics_hours_per_point: 0.0,
-            commissioning_hours: if line.category == "Commissioning" {
-                line.quantity.max(0.0) * line.hours_per_unit.max(0.0)
-            } else {
-                0.0
-            },
-            commissioning_hours_per_point: 0.0,
-        }
-    }
-
     fn template_seed_data() -> Vec<EquipmentTemplate> {
         vec![
             EquipmentTemplate::default(),
@@ -1122,29 +1103,52 @@ impl AutoMateApp {
         ]
     }
 
+    fn templates_store_path() -> PathBuf {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(".automate_templates.json");
+        }
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return PathBuf::from(appdata)
+                .join("AutoMate")
+                .join("templates.json");
+        }
+        PathBuf::from("automate_templates.json")
+    }
+
+    fn load_user_templates() -> Vec<EquipmentTemplate> {
+        let path = Self::templates_store_path();
+        if let Ok(raw) = fs::read_to_string(&path) {
+            if let Ok(templates) = serde_json::from_str::<Vec<EquipmentTemplate>>(&raw) {
+                if !templates.is_empty() {
+                    return templates;
+                }
+            }
+        }
+        Self::template_seed_data()
+    }
+
+    fn save_user_templates(&mut self) {
+        let path = Self::templates_store_path();
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        match serde_json::to_string_pretty(&self.user_templates) {
+            Ok(raw) => {
+                if let Err(err) = fs::write(&path, raw) {
+                    self.status = format!("Failed to save templates: {err}");
+                }
+            }
+            Err(err) => self.status = format!("Failed to serialize templates: {err}"),
+        }
+    }
+
     fn ensure_template_seeded(&mut self) {
-        if self.project.templates.is_empty() {
-            self.project.templates = Self::template_seed_data();
+        if self.user_templates.is_empty() {
+            self.user_templates = Self::template_seed_data();
         }
 
         let mut names = BTreeSet::new();
-        self.project
-            .templates
-            .retain(|t| names.insert(t.name.clone()));
-
-        for line in &self.project.custom_hour_lines {
-            let candidate = Self::to_template(line);
-            if let Some(existing) = self
-                .project
-                .templates
-                .iter_mut()
-                .find(|t| t.name == candidate.name)
-            {
-                *existing = candidate;
-            } else {
-                self.project.templates.push(candidate);
-            }
-        }
+        self.user_templates.retain(|t| names.insert(t.name.clone()));
     }
 
     fn refresh_overview_texture(&mut self, ctx: &egui::Context) {
@@ -1161,7 +1165,7 @@ impl AutoMateApp {
         }
     }
 
-    fn refresh_overlay_texture(&mut self, ctx: &egui::Context, target_width: u16) {
+    fn refresh_overlay_texture(&mut self, ctx: &egui::Context) {
         let Some(bytes) = &self.overlay_pdf_bytes else {
             self.overlay_texture = None;
             return;
@@ -1205,7 +1209,7 @@ impl AutoMateApp {
 
         let render = match page.render_with_config(
             &PdfRenderConfig::new()
-                .set_target_width(target_width.max(400) as i32)
+                .set_target_width(page.width().value.round() as i32)
                 .render_form_data(true),
         ) {
             Ok(render) => render,
@@ -1980,7 +1984,12 @@ impl AutoMateApp {
                 ui.label("  ");
             }
 
-            let title = format!("{} {}", obj.object_type.icon(), obj.name);
+            let node_icon = if obj.object_type == ObjectType::Point {
+                obj.point_kind.icon()
+            } else {
+                obj.object_type.icon()
+            };
+            let title = format!("{} {}", node_icon, obj.name);
             let text = if selected {
                 RichText::new(title).color(Color32::WHITE)
             } else {
@@ -2226,7 +2235,7 @@ impl AutoMateApp {
                                 &obj.template_name
                             })
                             .show_ui(ui, |ui| {
-                                for t in &self.project.templates {
+                                for t in &self.user_templates {
                                     if !self.show_archived_templates
                                         && Self::template_is_archived(&t.name)
                                     {
@@ -2583,10 +2592,17 @@ impl AutoMateApp {
 
     fn templates_view(&mut self, ui: &mut Ui) {
         ui.heading("Template Tool");
+        ui.label("Templates are user-level defaults and are not saved into project files.");
         ui.label("Define typical equipment point lists and default hours per template.");
+        let mut templates_dirty = false;
+        if ui.button("💾 Save Templates").clicked() {
+            self.save_user_templates();
+            self.status = "Saved user templates".to_string();
+        }
         if ui.button("+ New Template").clicked() {
-            self.project.templates.push(EquipmentTemplate {
-                name: format!("Template {}", self.project.templates.len() + 1),
+            templates_dirty = true;
+            self.user_templates.push(EquipmentTemplate {
+                name: format!("Template {}", self.user_templates.len() + 1),
                 equipment_type: String::new(),
                 points: vec![TemplatePoint::ai("New Point")],
                 hour_mode: HourCalculationMode::StaticByEquipment,
@@ -2601,7 +2617,7 @@ impl AutoMateApp {
 
         egui::ScrollArea::both().show(ui, |ui| {
             let mut remove_template = None;
-            for (idx, template) in self.project.templates.iter_mut().enumerate() {
+            for (idx, template) in self.user_templates.iter_mut().enumerate() {
                 Self::card_frame().show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.columns(3, |columns| {
@@ -2696,16 +2712,22 @@ impl AutoMateApp {
                         });
                     }
                     if let Some(pidx) = remove_point {
+                        templates_dirty = true;
                         template.points.remove(pidx);
                     }
                     if ui.button("+ Point").clicked() {
+                        templates_dirty = true;
                         template.points.push(TemplatePoint::ai("New Point"));
                     }
                 });
                 ui.add_space(6.0);
             }
             if let Some(idx) = remove_template {
-                self.project.templates.remove(idx);
+                templates_dirty = true;
+                self.user_templates.remove(idx);
+            }
+            if templates_dirty {
+                self.save_user_templates();
             }
         });
     }
@@ -2782,133 +2804,189 @@ impl AutoMateApp {
             .color(Color32::from_gray(180)),
         );
 
-        let desired = egui::vec2(ui.available_width(), ui.available_height() - 16.0);
-        let (resp, painter) = ui.allocate_painter(desired, egui::Sense::click_and_drag());
+        ui.horizontal(|ui| {
+            if ui.button("➖").clicked() {
+                self.overlay_zoom = (self.overlay_zoom * 0.9).clamp(0.25, 4.0);
+            }
+            if ui.button("➕").clicked() {
+                self.overlay_zoom = (self.overlay_zoom * 1.1).clamp(0.25, 4.0);
+            }
+            ui.label(format!("Zoom: {:.0}%", self.overlay_zoom * 100.0));
+            if ui.button("Reset View").clicked() {
+                self.overlay_zoom = 1.0;
+                self.overlay_pan = egui::Vec2::ZERO;
+            }
+        });
+
         if self.overlay_texture.is_none() && self.overlay_pdf_bytes.is_some() {
-            self.refresh_overlay_texture(ui.ctx(), desired.x as u16);
-        }
-        painter.rect_filled(
-            resp.rect,
-            10.0,
-            Color32::from_rgba_unmultiplied(255, 255, 255, 16),
-        );
-        painter.rect_stroke(resp.rect, 10.0, egui::Stroke::new(1.0, self.accent()));
-
-        if let Some(texture) = &self.overlay_texture {
-            painter.image(
-                texture.id(),
-                resp.rect,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                Color32::from_rgba_unmultiplied(255, 255, 255, 210),
-            );
+            self.refresh_overlay_texture(ui.ctx());
         }
 
-        if self.project.settings.show_overlay_grid {
-            let step = 36.0;
-            let mut x = resp.rect.left();
-            while x < resp.rect.right() {
-                painter.line_segment(
-                    [
-                        egui::pos2(x, resp.rect.top()),
-                        egui::pos2(x, resp.rect.bottom()),
-                    ],
-                    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 16)),
+        egui::ScrollArea::both()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let base_size = self
+                    .overlay_texture
+                    .as_ref()
+                    .map(|t| t.size_vec2())
+                    .unwrap_or_else(|| egui::vec2(1200.0, 1600.0));
+                let canvas_size = base_size * self.overlay_zoom;
+                let (resp, painter) =
+                    ui.allocate_painter(canvas_size, egui::Sense::click_and_drag());
+
+                let zoom_scroll = ui.input(|i| i.raw_scroll_delta.y);
+                if resp.hovered()
+                    && zoom_scroll.abs() > f32::EPSILON
+                    && ui.input(|i| i.modifiers.ctrl)
+                {
+                    let factor = if zoom_scroll > 0.0 { 1.08 } else { 0.92 };
+                    self.overlay_zoom = (self.overlay_zoom * factor).clamp(0.25, 4.0);
+                }
+                if resp.dragged_by(egui::PointerButton::Middle) {
+                    self.overlay_pan += resp.drag_delta();
+                }
+
+                let draw_rect = resp.rect.translate(self.overlay_pan);
+                painter.rect_filled(
+                    draw_rect,
+                    0.0,
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 16),
                 );
-                x += step;
-            }
-            let mut y = resp.rect.top();
-            while y < resp.rect.bottom() {
-                painter.line_segment(
-                    [
-                        egui::pos2(resp.rect.left(), y),
-                        egui::pos2(resp.rect.right(), y),
-                    ],
-                    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 16)),
-                );
-                y += step;
-            }
-        }
+                painter.rect_stroke(draw_rect, 0.0, egui::Stroke::new(1.0, self.accent()));
 
-        for (idx, node) in self.project.overlay_nodes.iter().enumerate() {
-            let center = egui::pos2(resp.rect.left() + node.x, resp.rect.top() + node.y);
-            let status_color = match idx % 3 {
-                0 => Color32::from_rgba_unmultiplied(189, 86, 92, 220),
-                1 => Color32::from_rgba_unmultiplied(193, 162, 78, 220),
-                _ => Color32::from_rgba_unmultiplied(91, 156, 103, 220),
-            };
-            let obj_name = self
-                .project
-                .objects
-                .iter()
-                .find(|o| o.id == node.object_id)
-                .map(|o| {
-                    let tag = if o.equipment_tag.trim().is_empty() {
-                        o.name.as_str()
-                    } else {
-                        o.equipment_tag.as_str()
-                    };
-                    format!("{}: {tag}", o.object_type.icon())
-                })
-                .unwrap_or_else(|| "Token".to_string());
+                if let Some(texture) = &self.overlay_texture {
+                    painter.image(
+                        texture.id(),
+                        draw_rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                    );
+                }
 
-            let label_rect = egui::Rect::from_center_size(center, egui::vec2(138.0, 28.0));
-            painter.rect_filled(label_rect, 6.0, status_color);
-            painter.rect_stroke(
-                label_rect,
-                6.0,
-                egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
-            );
-            painter.text(
-                label_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                obj_name,
-                FontId::new(15.0, FontFamily::Proportional),
-                Color32::WHITE,
-            );
-        }
-
-        for line in &self.project.overlay_lines {
-            let a = egui::pos2(
-                resp.rect.left() + line.from[0],
-                resp.rect.top() + line.from[1],
-            );
-            let b = egui::pos2(resp.rect.left() + line.to[0], resp.rect.top() + line.to[1]);
-            painter.line_segment([a, b], egui::Stroke::new(2.0, self.accent()));
-        }
-
-        if resp.hovered() {
-            if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
-                if ui.input(|i| i.pointer.any_released()) {
-                    if let Some(object_id) = self.dragging_tree_object.take() {
-                        self.place_overlay_node(
-                            object_id,
-                            [pointer.x - resp.rect.left(), pointer.y - resp.rect.top()],
+                if self.project.settings.show_overlay_grid {
+                    let step = 36.0 * self.overlay_zoom;
+                    let mut x = draw_rect.left();
+                    while x < draw_rect.right() {
+                        painter.line_segment(
+                            [
+                                egui::pos2(x, draw_rect.top()),
+                                egui::pos2(x, draw_rect.bottom()),
+                            ],
+                            egui::Stroke::new(
+                                1.0,
+                                Color32::from_rgba_unmultiplied(255, 255, 255, 16),
+                            ),
                         );
-                    } else if resp.clicked() {
-                        let local = [pointer.x - resp.rect.left(), pointer.y - resp.rect.top()];
-                        match self.overlay_tool {
-                            OverlayTool::Route => {
-                                if let Some(start) = self.active_line_start.take() {
-                                    self.push_overlay_history();
-                                    self.project.overlay_lines.push(OverlayLine {
-                                        from: start,
-                                        to: local,
-                                    });
-                                } else {
-                                    self.active_line_start = Some(local);
+                        x += step;
+                    }
+                    let mut y = draw_rect.top();
+                    while y < draw_rect.bottom() {
+                        painter.line_segment(
+                            [
+                                egui::pos2(draw_rect.left(), y),
+                                egui::pos2(draw_rect.right(), y),
+                            ],
+                            egui::Stroke::new(
+                                1.0,
+                                Color32::from_rgba_unmultiplied(255, 255, 255, 16),
+                            ),
+                        );
+                        y += step;
+                    }
+                }
+
+                for (idx, node) in self.project.overlay_nodes.iter().enumerate() {
+                    let center = egui::pos2(
+                        draw_rect.left() + node.x * self.overlay_zoom,
+                        draw_rect.top() + node.y * self.overlay_zoom,
+                    );
+                    let status_color = match idx % 3 {
+                        0 => Color32::from_rgba_unmultiplied(189, 86, 92, 220),
+                        1 => Color32::from_rgba_unmultiplied(193, 162, 78, 220),
+                        _ => Color32::from_rgba_unmultiplied(91, 156, 103, 220),
+                    };
+                    let obj_name = self
+                        .project
+                        .objects
+                        .iter()
+                        .find(|o| o.id == node.object_id)
+                        .map(|o| {
+                            let tag = if o.equipment_tag.trim().is_empty() {
+                                o.name.as_str()
+                            } else {
+                                o.equipment_tag.as_str()
+                            };
+                            format!("{}: {tag}", o.object_type.icon())
+                        })
+                        .unwrap_or_else(|| "Token".to_string());
+
+                    let label_rect = egui::Rect::from_center_size(
+                        center,
+                        egui::vec2(138.0, 28.0) * self.overlay_zoom.min(1.5),
+                    );
+                    painter.rect_filled(label_rect, 6.0, status_color);
+                    painter.rect_stroke(
+                        label_rect,
+                        6.0,
+                        egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
+                    );
+                    painter.text(
+                        label_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        obj_name,
+                        FontId::new(15.0 * self.overlay_zoom.min(1.4), FontFamily::Proportional),
+                        Color32::WHITE,
+                    );
+                }
+
+                for line in &self.project.overlay_lines {
+                    let a = egui::pos2(
+                        draw_rect.left() + line.from[0] * self.overlay_zoom,
+                        draw_rect.top() + line.from[1] * self.overlay_zoom,
+                    );
+                    let b = egui::pos2(
+                        draw_rect.left() + line.to[0] * self.overlay_zoom,
+                        draw_rect.top() + line.to[1] * self.overlay_zoom,
+                    );
+                    painter.line_segment([a, b], egui::Stroke::new(2.0, self.accent()));
+                }
+
+                if resp.hovered() {
+                    if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
+                        if ui.input(|i| i.pointer.any_released()) {
+                            let local = [
+                                (pointer.x - draw_rect.left()) / self.overlay_zoom,
+                                (pointer.y - draw_rect.top()) / self.overlay_zoom,
+                            ];
+                            if let Some(object_id) = self.dragging_tree_object.take() {
+                                self.place_overlay_node(object_id, local);
+                            } else if resp.clicked() {
+                                match self.overlay_tool {
+                                    OverlayTool::Route => {
+                                        if let Some(start) = self.active_line_start.take() {
+                                            self.push_overlay_history();
+                                            self.project.overlay_lines.push(OverlayLine {
+                                                from: start,
+                                                to: local,
+                                            });
+                                        } else {
+                                            self.active_line_start = Some(local);
+                                        }
+                                    }
+                                    OverlayTool::PlaceController => {
+                                        self.pending_overlay_drop =
+                                            Some((ObjectType::Controller, local));
+                                    }
+                                    OverlayTool::PlaceEquipment => {
+                                        self.pending_overlay_drop =
+                                            Some((ObjectType::Equipment, local));
+                                    }
                                 }
-                            }
-                            OverlayTool::PlaceController => {
-                                self.pending_overlay_drop = Some((ObjectType::Controller, local));
-                            }
-                            OverlayTool::PlaceEquipment => {
-                                self.pending_overlay_drop = Some((ObjectType::Equipment, local));
                             }
                         }
                     }
                 }
-            }
-        }
+            });
 
         if ui.input(|i| i.pointer.any_released()) {
             self.dragging_tree_object = None;
