@@ -441,6 +441,12 @@ struct Project {
     overview_image: Option<String>,
     #[serde(default = "default_project_uuid")]
     project_uuid: Uuid,
+    #[serde(default = "default_controller_prefix")]
+    controller_prefix: String,
+}
+
+fn default_controller_prefix() -> String {
+    "Controller-".to_string()
 }
 
 impl Default for Project {
@@ -543,6 +549,7 @@ impl Default for Project {
             settings: AppSettings::default(),
             overview_image: None,
             project_uuid: default_project_uuid(),
+            controller_prefix: default_controller_prefix(),
         }
     }
 }
@@ -581,13 +588,8 @@ struct AutoMateApp {
     overlay_tool: OverlayTool,
     overlay_zoom: f32,
     overlay_pan: egui::Vec2,
-}
-
-#[derive(Debug, Clone)]
-struct FeatureMetric {
-    name: &'static str,
-    is_used: bool,
-    note: String,
+    overlay_pdf_page: usize,
+    overlay_pdf_page_count: usize,
 }
 
 impl AutoMateApp {
@@ -627,6 +629,8 @@ impl AutoMateApp {
             overlay_tool: OverlayTool::Route,
             overlay_zoom: 1.0,
             overlay_pan: egui::Vec2::ZERO,
+            overlay_pdf_page: 0,
+            overlay_pdf_page_count: 0,
         }
     }
 
@@ -972,34 +976,35 @@ impl AutoMateApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(Color32::from_rgb(14, 19, 30)))
             .show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space((ui.available_height() * 0.12).max(18.0));
+                ui.with_layout(
+                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                    |ui| {
+                        let card_width = ui.available_width().min(900.0);
+                        Self::surface_panel().show(ui, |ui| {
+                            ui.set_width(card_width);
 
-                    let card_width = ui.available_width().min(900.0);
-                    Self::surface_panel().show(ui, |ui| {
-                        ui.set_width(card_width);
-
-                        ui.columns(2, |columns| {
-                            columns[0].vertical_centered(|ui| {
-                                self.draw_mark(ui);
-                                ui.add_space(6.0);
-                                ui.label(
-                                    RichText::new("Technical Application Login")
-                                        .size(24.0)
-                                        .strong(),
-                                );
-                                ui.label(
-                                    RichText::new(
-                                        "Secure sign-in for BAS estimating, drawings, and controls engineering.",
-                                    )
-                                    .size(14.0)
-                                    .color(Color32::from_gray(196)),
-                                );
+                            ui.columns(2, |columns| {
+                                columns[0].vertical_centered(|ui| {
+                                    self.draw_mark(ui);
+                                    ui.add_space(6.0);
+                                    ui.label(
+                                        RichText::new("Technical Application Login")
+                                            .size(24.0)
+                                            .strong(),
+                                    );
+                                    ui.label(
+                                        RichText::new(
+                                            "Secure sign-in for BAS estimating, drawings, and controls engineering.",
+                                        )
+                                        .size(14.0)
+                                        .color(Color32::from_gray(196)),
+                                    );
+                                });
+                                self.render_login_form(&mut columns[1]);
                             });
-                            self.render_login_form(&mut columns[1]);
                         });
-                    });
-                });
+                    },
+                );
             });
     }
 
@@ -1324,6 +1329,8 @@ impl AutoMateApp {
     fn refresh_overlay_texture(&mut self, ctx: &egui::Context) {
         let Some(bytes) = &self.overlay_pdf_bytes else {
             self.overlay_texture = None;
+            self.overlay_pdf_page_count = 0;
+            self.overlay_pdf_page = 0;
             return;
         };
 
@@ -1354,7 +1361,16 @@ impl AutoMateApp {
             }
         };
 
-        let page = match document.pages().get(0) {
+        self.overlay_pdf_page_count = document.pages().len() as usize;
+        if self.overlay_pdf_page_count == 0 {
+            self.overlay_texture = None;
+            self.overlay_pdf_page = 0;
+            self.status = "Loaded PDF has no pages".to_string();
+            return;
+        }
+        self.overlay_pdf_page = self.overlay_pdf_page.min(self.overlay_pdf_page_count - 1);
+
+        let page = match document.pages().get(self.overlay_pdf_page as u16) {
             Ok(page) => page,
             Err(err) => {
                 self.status = format!("PDF page read failed: {err}");
@@ -1462,13 +1478,40 @@ impl AutoMateApp {
 
         let id = self.project.next_id;
         self.project.next_id += 1;
+
+        let mut name = format!("{} {}", object_type.label(), id);
+        let mut equipment_tag = String::new();
+
+        if object_type == ObjectType::Controller {
+            let count = self
+                .project
+                .objects
+                .iter()
+                .filter(|o| o.object_type == ObjectType::Controller)
+                .count()
+                + 1;
+            name = format!("{}{}", self.project.controller_prefix, count);
+        }
+
+        if object_type == ObjectType::Equipment {
+            let count = self
+                .project
+                .objects
+                .iter()
+                .filter(|o| o.object_type == ObjectType::Equipment)
+                .count()
+                + 1;
+            name = format!("Equipment-{}", count);
+            equipment_tag = name.clone();
+        }
+
         self.project.objects.push(BasObject {
             id,
             parent_id: parent,
             object_type,
-            name: format!("{} {}", object_type.label(), id),
+            name,
             equipment_type: String::new(),
-            equipment_tag: String::new(),
+            equipment_tag,
             make: String::new(),
             model: String::new(),
             controller_type: "Lynxspring Edge".to_string(),
@@ -1593,6 +1636,12 @@ impl AutoMateApp {
         });
         self.project.next_id += 1;
         self.status = "Placed overlay token".to_string();
+    }
+
+    fn object_overlay_color(&self, object_id: u64) -> Color32 {
+        let hue = ((object_id as f32 * 47.0) % 360.0) / 360.0;
+        let hsva = egui::ecolor::Hsva::new(hue, 0.58, 0.78, 0.86);
+        Color32::from(hsva)
     }
 
     fn normalize_loaded_project(&mut self) {
@@ -1969,11 +2018,6 @@ impl AutoMateApp {
     }
 
     fn project_overview(&mut self, ui: &mut Ui) {
-        let metrics = self.feature_metrics();
-        let used_features = metrics.iter().filter(|m| m.is_used).count();
-        let total_features = metrics.len().max(1);
-        let adoption_ratio = used_features as f32 / total_features as f32;
-
         Self::card_frame().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(RichText::new("Project Overview").strong());
@@ -1995,142 +2039,12 @@ impl AutoMateApp {
             ui.label(format!("Total Objects: {}", self.project.objects.len()));
             ui.small(format!("Project ID: {}", self.project.project_uuid));
 
-            ui.add_space(8.0);
             ui.separator();
-            ui.label(RichText::new("Feature Adoption").strong());
-            ui.add(
-                egui::ProgressBar::new(adoption_ratio)
-                    .text(format!("{used_features}/{total_features} active workflows")),
-            );
-            for metric in metrics {
-                let icon = if metric.is_used { "✅" } else { "⚪" };
-                ui.small(format!("{icon} {} — {}", metric.name, metric.note));
+            if ui.button("Apply Recommended Defaults").clicked() {
+                self.apply_recommended_settings();
+                self.status = "Applied recommended defaults".to_string();
             }
-
-            ui.add_space(8.0);
-            ui.separator();
-            ui.label(RichText::new("QOL Health Check").strong());
-            let issues = self.ux_health_issues();
-            if issues.is_empty() {
-                ui.small("All key UX and data quality checks look healthy.");
-            } else {
-                for issue in &issues {
-                    ui.small(format!("⚠ {issue}"));
-                }
-            }
-
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Run QOL Pass").clicked() {
-                    self.run_qol_pass();
-                }
-                if ui.button("Apply Recommended Defaults").clicked() {
-                    self.apply_recommended_settings();
-                    self.status = "Applied recommended defaults".to_string();
-                }
-            });
         });
-    }
-
-    fn feature_metrics(&self) -> Vec<FeatureMetric> {
-        vec![
-            FeatureMetric {
-                name: "Proposal metadata",
-                is_used: !self.project.proposal.client_name.trim().is_empty()
-                    || !self.project.proposal.project_location.trim().is_empty()
-                    || !self.project.proposal.proposal_number.trim().is_empty(),
-                note: "Client/location/proposal fields".to_string(),
-            },
-            FeatureMetric {
-                name: "BAS object modeling",
-                is_used: self.project.objects.len() > 1,
-                note: format!("{} objects in hierarchy", self.project.objects.len()),
-            },
-            FeatureMetric {
-                name: "Template-driven engineering",
-                is_used: self
-                    .project
-                    .objects
-                    .iter()
-                    .any(|o| o.object_type == ObjectType::Equipment && !o.template_name.is_empty()),
-                note: "Equipment assigned to templates".to_string(),
-            },
-            FeatureMetric {
-                name: "Drawing overlay",
-                is_used: self.project.overlay_pdf.is_some()
-                    || !self.project.overlay_nodes.is_empty(),
-                note: format!(
-                    "{} tokens • {} routes",
-                    self.project.overlay_nodes.len(),
-                    self.project.overlay_lines.len()
-                ),
-            },
-            FeatureMetric {
-                name: "Estimator adjustments",
-                is_used: !self.project.custom_hour_lines.is_empty()
-                    || self.project.estimator.complexity_factor != 1.0
-                    || self.project.estimator.renovation_factor != 1.0
-                    || self.project.estimator.integration_factor != 1.0,
-                note: format!("{} custom lines", self.project.custom_hour_lines.len()),
-            },
-        ]
-    }
-
-    fn ux_health_issues(&self) -> Vec<String> {
-        let mut issues = Vec::new();
-        if self.project.settings.ui_scale < 0.95 || self.project.settings.ui_scale > 1.25 {
-            issues.push("UI scale is outside recommended ergonomic range (0.95–1.25).".to_string());
-        }
-        if self.object_search_query.trim().len() > 40 {
-            issues.push(
-                "Search query is very long; consider narrowing terms for faster scanning."
-                    .to_string(),
-            );
-        }
-        if self
-            .project
-            .objects
-            .iter()
-            .filter(|o| o.object_type == ObjectType::Equipment)
-            .any(|o| o.equipment_tag.trim().is_empty())
-        {
-            issues.push("Some equipment objects are missing equipment tags.".to_string());
-        }
-        if self.project.settings.autosave_minutes > 15 {
-            issues.push("Autosave interval is above 15 minutes.".to_string());
-        }
-        issues
-    }
-
-    fn run_qol_pass(&mut self) {
-        self.apply_recommended_settings();
-
-        for obj in self
-            .project
-            .objects
-            .iter_mut()
-            .filter(|o| o.object_type == ObjectType::Equipment)
-        {
-            if obj.equipment_tag.trim().is_empty() {
-                let eq_type = if obj.equipment_type.trim().is_empty() {
-                    "EQ"
-                } else {
-                    obj.equipment_type.trim()
-                };
-                obj.equipment_tag = format!("{}-{}", eq_type, obj.id);
-            }
-            if obj.name.trim().is_empty() {
-                obj.name = format!("Equipment {}", obj.id);
-            }
-        }
-
-        for obj in self.project.objects.iter_mut() {
-            if obj.object_type == ObjectType::Point && obj.name.trim().is_empty() {
-                obj.name = format!("Point {}", obj.id);
-            }
-        }
-
-        self.status =
-            "QOL pass complete: defaults normalized and missing labels filled".to_string();
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -2308,6 +2222,27 @@ impl AutoMateApp {
             };
 
             let row = ui.selectable_label(selected, text);
+            match obj.object_type {
+                ObjectType::Building => {
+                    if ui
+                        .small_button("+")
+                        .on_hover_text("Add Controller")
+                        .clicked()
+                    {
+                        add_child = Some(ObjectType::Controller);
+                    }
+                }
+                ObjectType::Controller => {
+                    if ui
+                        .small_button("+")
+                        .on_hover_text("Add Equipment")
+                        .clicked()
+                    {
+                        add_child = Some(ObjectType::Equipment);
+                    }
+                }
+                _ => {}
+            }
             if row.drag_started() {
                 self.dragging_tree_object = Some(id);
             }
@@ -2644,6 +2579,11 @@ impl AutoMateApp {
                         "Project #",
                         &mut self.project.proposal.project_number,
                     );
+                    Self::labeled_singleline(
+                        ui,
+                        "Controller Prefix",
+                        &mut self.project.controller_prefix,
+                    );
                     ui.horizontal(|ui| {
                         if ui.button("🖼 Upload Overview Image").clicked() {
                             if let Some(path) = FileDialog::new()
@@ -2860,6 +2800,41 @@ impl AutoMateApp {
             self.save_user_templates();
             self.status = "Saved user templates".to_string();
         }
+        ui.horizontal(|ui| {
+            if ui.button("📤 Export JSON").clicked() {
+                if let Some(path) = FileDialog::new()
+                    .add_filter("JSON", &["json"])
+                    .set_file_name("automate-templates.json")
+                    .save_file()
+                {
+                    match serde_json::to_string_pretty(&self.user_templates) {
+                        Ok(raw) => match fs::write(&path, raw) {
+                            Ok(_) => {
+                                self.status = format!("Exported templates to {}", path.display())
+                            }
+                            Err(err) => self.status = format!("Template export failed: {err}"),
+                        },
+                        Err(err) => self.status = format!("Template export failed: {err}"),
+                    }
+                }
+            }
+            if ui.button("📥 Import JSON").clicked() {
+                if let Some(path) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
+                    match fs::read_to_string(&path) {
+                        Ok(raw) => match serde_json::from_str::<Vec<EquipmentTemplate>>(&raw) {
+                            Ok(imported) => {
+                                self.user_templates = imported;
+                                self.ensure_template_seeded();
+                                self.save_user_templates();
+                                self.status = format!("Imported templates from {}", path.display());
+                            }
+                            Err(err) => self.status = format!("Template import failed: {err}"),
+                        },
+                        Err(err) => self.status = format!("Template import failed: {err}"),
+                    }
+                }
+            }
+        });
         if ui.button("+ New Template").clicked() {
             templates_dirty = true;
             self.user_templates.push(EquipmentTemplate {
@@ -3012,6 +2987,8 @@ impl AutoMateApp {
                             self.project.overlay_pdf = Some(Self::sanitize_asset_name(&path));
                             self.overlay_pdf_bytes = Some(bytes);
                             self.overlay_texture = None;
+                            self.overlay_pdf_page = 0;
+                            self.overlay_pdf_page_count = 0;
                             self.status = "Loaded overlay PDF".to_string();
                         }
                         Err(err) => self.status = format!("PDF load failed: {err}"),
@@ -3024,6 +3001,21 @@ impl AutoMateApp {
                     .clone()
                     .unwrap_or_else(|| "No PDF selected".to_string()),
             );
+            if ui.button("◀ Prev Page").clicked() && self.overlay_pdf_page > 0 {
+                self.overlay_pdf_page -= 1;
+                self.overlay_texture = None;
+            }
+            ui.label(format!(
+                "Page {} / {}",
+                self.overlay_pdf_page + 1,
+                self.overlay_pdf_page_count.max(1)
+            ));
+            if ui.button("Next Page ▶").clicked()
+                && self.overlay_pdf_page + 1 < self.overlay_pdf_page_count
+            {
+                self.overlay_pdf_page += 1;
+                self.overlay_texture = None;
+            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
@@ -3156,16 +3148,12 @@ impl AutoMateApp {
                     }
                 }
 
-                for (idx, node) in self.project.overlay_nodes.iter().enumerate() {
+                for node in &self.project.overlay_nodes {
                     let center = egui::pos2(
                         draw_rect.left() + node.x * self.overlay_zoom,
                         draw_rect.top() + node.y * self.overlay_zoom,
                     );
-                    let status_color = match idx % 3 {
-                        0 => Color32::from_rgba_unmultiplied(189, 86, 92, 220),
-                        1 => Color32::from_rgba_unmultiplied(193, 162, 78, 220),
-                        _ => Color32::from_rgba_unmultiplied(91, 156, 103, 220),
-                    };
+                    let status_color = self.object_overlay_color(node.object_id);
                     let obj_name = self
                         .project
                         .objects
@@ -3311,9 +3299,10 @@ impl AutoMateApp {
                 .open(&mut self.show_about)
                 .show(ctx, |ui| {
                     ui.label("AutoMate BAS Studio");
-                    ui.label("Data-first takeoff, estimating, and proposal workflow.");
+                    ui.label("Created by Christopher Jordan White.");
+                    ui.label("A data-first BAS engineering toolkit for project setup, object modeling, template-based point generation, drawing overlays, and estimating workflows.");
                     ui.separator();
-                    ui.label(RichText::new("Signature: Built for M8 by ChatGPT").italics());
+                    ui.label(RichText::new("Tool was created by Christopher Jordan White.").italics());
                 });
         }
 
