@@ -567,6 +567,11 @@ struct AutoMateApp {
     left_sidebar_collapsed: bool,
     object_search_query: String,
     show_archived_templates: bool,
+    user_templates: Vec<EquipmentTemplate>,
+    collapsed_tree_nodes: HashSet<u64>,
+    overlay_tool: OverlayTool,
+    overlay_zoom: f32,
+    overlay_pan: egui::Vec2,
 }
 
 impl AutoMateApp {
@@ -600,6 +605,11 @@ impl AutoMateApp {
             left_sidebar_collapsed: false,
             object_search_query: String::new(),
             show_archived_templates: false,
+            user_templates: Self::load_user_templates(),
+            collapsed_tree_nodes: HashSet::new(),
+            overlay_tool: OverlayTool::Route,
+            overlay_zoom: 1.0,
+            overlay_pan: egui::Vec2::ZERO,
         }
     }
 
@@ -1159,6 +1169,62 @@ impl AutoMateApp {
 
         let mut names = BTreeSet::new();
         self.user_templates.retain(|t| names.insert(t.name.clone()));
+        self.project.templates = self.user_templates.clone();
+    }
+
+    fn sync_equipment_from_template(&mut self, obj_id: u64) {
+        let Some(eq) = self
+            .project
+            .objects
+            .iter()
+            .find(|o| o.id == obj_id)
+            .cloned()
+        else {
+            return;
+        };
+        if eq.object_type != ObjectType::Equipment || eq.template_name.is_empty() {
+            return;
+        }
+
+        if let Some(template) = self
+            .project
+            .templates
+            .iter()
+            .find(|t| t.name == eq.template_name)
+            .cloned()
+        {
+            if let Some(eq_obj) = self.project.objects.iter_mut().find(|o| o.id == obj_id) {
+                if !eq_obj.equipment_type_override {
+                    eq_obj.equipment_type = template.equipment_type.clone();
+                }
+                if eq_obj.equipment_tag.trim().is_empty() {
+                    eq_obj.equipment_tag = format!("{}-{}", template.equipment_type, obj_id);
+                }
+                if !eq_obj.hours_override {
+                    eq_obj.hours_override_mode = template.hour_mode.clone();
+                }
+            }
+
+            let existing_points: HashSet<String> = self
+                .project
+                .objects
+                .iter()
+                .filter(|o| o.parent_id == Some(obj_id) && o.object_type == ObjectType::Point)
+                .map(|o| o.name.clone())
+                .collect();
+
+            for point in template.points {
+                if existing_points.contains(&point.name) {
+                    continue;
+                }
+                self.add_object(ObjectType::Point, Some(obj_id));
+                if let Some(new_obj) = self.project.objects.last_mut() {
+                    new_obj.name = point.name;
+                    new_obj.point_kind = point.kind;
+                    new_obj.property_groups.clear();
+                }
+            }
+        }
     }
 
     fn refresh_overview_texture(&mut self, ctx: &egui::Context) {
@@ -2054,57 +2120,7 @@ impl AutoMateApp {
         let Some(obj_id) = self.selected_object else {
             return;
         };
-        let Some(eq) = self
-            .project
-            .objects
-            .iter()
-            .find(|o| o.id == obj_id)
-            .cloned()
-        else {
-            return;
-        };
-        if eq.object_type != ObjectType::Equipment || eq.template_name.is_empty() {
-            return;
-        }
-
-        if let Some(template) = self
-            .project
-            .templates
-            .iter()
-            .find(|t| t.name == eq.template_name)
-            .cloned()
-        {
-            if let Some(eq_obj) = self.project.objects.iter_mut().find(|o| o.id == obj_id) {
-                if !eq_obj.equipment_type_override {
-                    eq_obj.equipment_type = template.equipment_type.clone();
-                }
-                if eq_obj.equipment_tag.trim().is_empty() {
-                    eq_obj.equipment_tag = format!("{}-{}", template.equipment_type, obj_id);
-                }
-                if !eq_obj.hours_override {
-                    eq_obj.hours_override_mode = template.hour_mode.clone();
-                }
-            }
-            let existing_points: HashSet<String> = self
-                .project
-                .objects
-                .iter()
-                .filter(|o| o.parent_id == Some(obj_id) && o.object_type == ObjectType::Point)
-                .map(|o| o.name.clone())
-                .collect();
-
-            for point in template.points {
-                if existing_points.contains(&point.name) {
-                    continue;
-                }
-                self.add_object(ObjectType::Point, Some(obj_id));
-                if let Some(new_obj) = self.project.objects.last_mut() {
-                    new_obj.name = point.name;
-                    new_obj.point_kind = point.kind;
-                    new_obj.property_groups.clear();
-                }
-            }
-        }
+        self.sync_equipment_from_template(obj_id);
     }
 
     fn right_properties(&mut self, ui: &mut Ui) {
@@ -2116,6 +2132,7 @@ impl AutoMateApp {
                 let mut template_changed = false;
                 let mut override_changed = false;
                 let obj = &mut self.project.objects[index];
+                let before_template = obj.template_name.clone();
                 Self::card_frame().show(ui, |ui| {
                     ui.label(format!(
                         "{} {}",
