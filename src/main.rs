@@ -858,9 +858,25 @@ impl AutoMateApp {
     }
 
     fn local_pdf_path() -> Option<PathBuf> {
+        fn resolve_candidate(path: PathBuf) -> Option<PathBuf> {
+            if path.is_file() {
+                return Some(path);
+            }
+
+            if path.is_dir() {
+                for name in AutoMateApp::platform_pdf_names() {
+                    let candidate = path.join(name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+
+            None
+        }
+
         if let Ok(path) = std::env::var("AUTOMATE_PDFIUM_LIB") {
-            let path = PathBuf::from(path);
-            if path.exists() {
+            if let Some(path) = resolve_candidate(PathBuf::from(path)) {
                 return Some(path);
             }
         }
@@ -875,9 +891,19 @@ impl AutoMateApp {
         }
 
         for root in roots {
+            if let Some(path) = resolve_candidate(root.clone()) {
+                return Some(path);
+            }
+
+            for subdir in ["bin", "lib", "libs"] {
+                if let Some(path) = resolve_candidate(root.join(subdir)) {
+                    return Some(path);
+                }
+            }
+
             for name in Self::platform_pdf_names() {
                 let candidate = root.join(name);
-                if candidate.exists() {
+                if candidate.is_file() {
                     return Some(candidate);
                 }
             }
