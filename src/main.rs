@@ -391,6 +391,7 @@ struct AutoMateApp {
     show_about: bool,
     show_software_settings: bool,
     dragging_palette: Option<ObjectType>,
+    dragging_tree_object: Option<u64>,
     active_line_start: Option<[f32; 2]>,
     is_fullscreen: bool,
     app_screen: AppScreen,
@@ -422,6 +423,7 @@ impl AutoMateApp {
             show_about: false,
             show_software_settings: false,
             dragging_palette: None,
+            dragging_tree_object: None,
             active_line_start: None,
             is_fullscreen: true,
             app_screen: AppScreen::Splash,
@@ -1158,6 +1160,66 @@ impl AutoMateApp {
         self.status = "Object deleted".to_string();
     }
 
+    fn can_reparent_object(&self, child_id: u64, new_parent_id: u64) -> bool {
+        let Some(child) = self.project.objects.iter().find(|o| o.id == child_id) else {
+            return false;
+        };
+        let Some(new_parent) = self.project.objects.iter().find(|o| o.id == new_parent_id) else {
+            return false;
+        };
+
+        let valid_edge = matches!(
+            (child.object_type, new_parent.object_type),
+            (ObjectType::Controller, ObjectType::Building)
+                | (ObjectType::Equipment, ObjectType::Controller)
+        );
+        if !valid_edge || child.id == new_parent.id {
+            return false;
+        }
+
+        let mut cursor = Some(new_parent_id);
+        while let Some(current_id) = cursor {
+            if current_id == child_id {
+                return false;
+            }
+            cursor = self
+                .project
+                .objects
+                .iter()
+                .find(|o| o.id == current_id)
+                .and_then(|o| o.parent_id);
+        }
+
+        true
+    }
+
+    fn reparent_object(&mut self, child_id: u64, new_parent_id: u64) {
+        if !self.can_reparent_object(child_id, new_parent_id) {
+            self.status = "Invalid drop target".to_string();
+            return;
+        }
+        if let Some(child) = self.project.objects.iter_mut().find(|o| o.id == child_id) {
+            child.parent_id = Some(new_parent_id);
+            self.status = "Moved object".to_string();
+        }
+    }
+
+    fn place_overlay_node(&mut self, object_id: u64, pos: [f32; 2]) {
+        if self.project.objects.iter().all(|o| o.id != object_id) {
+            self.status = "Cannot place overlay token for missing object".to_string();
+            return;
+        }
+        self.push_overlay_history();
+        self.project.overlay_nodes.push(OverlayNode {
+            id: self.project.next_id,
+            object_id,
+            x: pos[0],
+            y: pos[1],
+        });
+        self.project.next_id += 1;
+        self.status = "Placed overlay token".to_string();
+    }
+
     fn normalize_loaded_project(&mut self) {
         let valid_ids: BTreeSet<u64> = self.project.objects.iter().map(|o| o.id).collect();
 
@@ -1612,8 +1674,21 @@ impl AutoMateApp {
         };
 
         let row = ui.selectable_label(selected, text);
+        if row.drag_started() {
+            self.dragging_tree_object = Some(id);
+        }
         if row.clicked() {
             self.selected_object = Some(id);
+        }
+        if row.hovered()
+            && ui.input(|i| i.pointer.any_released())
+            && obj.object_type != ObjectType::Point
+        {
+            if let Some(dragged_id) = self.dragging_tree_object.take() {
+                if dragged_id != id {
+                    self.reparent_object(dragged_id, id);
+                }
+            }
         }
         row.context_menu(|ui| {
             if ui.button("Duplicate").clicked() {
@@ -2358,8 +2433,19 @@ impl AutoMateApp {
                 .objects
                 .iter()
                 .find(|o| o.id == node.object_id)
-                .map(|o| o.name.as_str())
-                .unwrap_or("Token");
+                .map(|o| {
+                    if o.object_type == ObjectType::Equipment {
+                        let tag = if o.equipment_tag.trim().is_empty() {
+                            o.name.as_str()
+                        } else {
+                            o.equipment_tag.as_str()
+                        };
+                        format!("{}: {tag}", ObjectType::Equipment.icon())
+                    } else {
+                        o.name.clone()
+                    }
+                })
+                .unwrap_or_else(|| "Token".to_string());
 
             let label_rect = egui::Rect::from_center_size(center, egui::vec2(138.0, 28.0));
             painter.rect_filled(label_rect, 6.0, status_color);
@@ -2389,7 +2475,12 @@ impl AutoMateApp {
         if resp.hovered() {
             if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
                 if ui.input(|i| i.pointer.any_released()) {
-                    if let Some(kind) = self.dragging_palette.take() {
+                    if let Some(object_id) = self.dragging_tree_object.take() {
+                        self.place_overlay_node(
+                            object_id,
+                            [pointer.x - resp.rect.left(), pointer.y - resp.rect.top()],
+                        );
+                    } else if let Some(kind) = self.dragging_palette.take() {
                         self.pending_overlay_drop = Some((
                             kind,
                             [pointer.x - resp.rect.left(), pointer.y - resp.rect.top()],
@@ -2408,6 +2499,10 @@ impl AutoMateApp {
                     }
                 }
             }
+        }
+
+        if ui.input(|i| i.pointer.any_released()) {
+            self.dragging_tree_object = None;
         }
 
         if let Some((kind, pos)) = self.pending_overlay_drop.clone() {
