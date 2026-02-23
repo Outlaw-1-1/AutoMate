@@ -760,23 +760,43 @@ impl AutoMateApp {
             .unwrap_or_else(|| "asset.bin".to_string())
     }
 
+    fn platform_pdf_names() -> [&'static str; 2] {
+        if cfg!(target_os = "windows") {
+            ["pdfium.dll", "pdfium"]
+        } else if cfg!(target_os = "macos") {
+            ["libpdfium.dylib", "pdfium"]
+        } else {
+            ["libpdfium.so", "pdfium"]
+        }
+    }
+
     fn local_pdf_path() -> Option<PathBuf> {
-        std::env::var("AUTOMATE_PDFIUM_LIB")
-            .ok()
-            .map(PathBuf::from)
-            .or_else(|| {
-                let mut candidate = std::env::current_exe().ok()?;
-                candidate.pop();
-                let file = if cfg!(target_os = "windows") {
-                    "pdfium.dll"
-                } else if cfg!(target_os = "macos") {
-                    "libpdfium.dylib"
-                } else {
-                    "libpdfium.so"
-                };
-                candidate.push(file);
-                candidate.exists().then_some(candidate)
-            })
+        if let Ok(path) = std::env::var("AUTOMATE_PDFIUM_LIB") {
+            let path = PathBuf::from(path);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+
+        let mut roots = Vec::new();
+        if let Ok(mut exe_path) = std::env::current_exe() {
+            exe_path.pop();
+            roots.push(exe_path);
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            roots.push(cwd);
+        }
+
+        for root in roots {
+            for name in Self::platform_pdf_names() {
+                let candidate = root.join(name);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+
+        None
     }
 
     fn to_template(line: &HourLine) -> EquipmentTemplate {
@@ -938,7 +958,11 @@ impl AutoMateApp {
 
         let bindings = match Self::local_pdf_path() {
             Some(path) => Pdfium::bind_to_library(path).map_err(|err| err.to_string()),
-            None => Err("local PDFium binary not found. Place PDFium next to the app or set AUTOMATE_PDFIUM_LIB.".to_string()),
+            None => Pdfium::bind_to_system_library().map_err(|err| {
+                format!(
+                    "local PDFium binary not found and system PDFium unavailable. Place PDFium next to the app or set AUTOMATE_PDFIUM_LIB. ({err})"
+                )
+            }),
         };
         let bindings = match bindings {
             Ok(bindings) => bindings,
