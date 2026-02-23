@@ -12,3 +12,4 @@ rfd = "0.14"
 zip = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
 pdfium-render = "0.8"
+pollster = "0.3"
