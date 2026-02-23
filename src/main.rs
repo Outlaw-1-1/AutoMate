@@ -1,7 +1,9 @@
 use chrono::Local;
 use directories::ProjectDirs;
 use eframe::{
-    egui::{self, menu, Align2, Color32, FontFamily, FontId, RichText, Sense, TextureHandle, Ui},
+    egui::{
+        self, menu, vec2, Align2, Color32, FontFamily, FontId, RichText, Sense, TextureHandle, Ui,
+    },
     epaint::{Mesh, Shadow, Vertex},
     App, CreationContext, Frame, NativeOptions,
 };
@@ -26,7 +28,8 @@ fn main() -> eframe::Result<()> {
             .with_fullscreen(false)
             .with_decorations(false)
             .with_resizable(true)
-            .with_inner_size([1600.0, 920.0]),
+            .with_transparent(true)
+            .with_inner_size(STUDIO_WINDOW_SIZE),
         ..Default::default()
     };
 
@@ -68,6 +71,11 @@ enum AppScreen {
     Login,
     Studio,
 }
+
+const SPLASH_WINDOW_SIZE: f32 = 200.0;
+const LOGIN_WINDOW_DEFAULT_SIZE: [f32; 2] = [1200.0, 760.0];
+const LOGIN_WINDOW_MIN_SIZE: [f32; 2] = [960.0, 620.0];
+const STUDIO_WINDOW_SIZE: [f32; 2] = [1600.0, 920.0];
 
 #[derive(Debug, Error)]
 enum AppIoError {
@@ -551,6 +559,7 @@ struct AutoMateApp {
     active_line_start: Option<[f32; 2]>,
     is_fullscreen: bool,
     app_screen: AppScreen,
+    viewport_configured_for: Option<AppScreen>,
     splash_started_at: Instant,
     login_username: String,
     login_password: String,
@@ -596,6 +605,7 @@ impl AutoMateApp {
             active_line_start: None,
             is_fullscreen: true,
             app_screen: AppScreen::Splash,
+            viewport_configured_for: None,
             splash_started_at: Instant::now(),
             login_username: String::new(),
             login_password: String::new(),
@@ -891,76 +901,135 @@ impl AutoMateApp {
         }
     }
 
+    fn configure_viewport_for_screen(&mut self, ctx: &egui::Context) {
+        if self.viewport_configured_for == Some(self.app_screen) {
+            return;
+        }
+
+        let center_on_active_screen = || {
+            if let Some(center_cmd) = egui::ViewportCommand::center_on_screen(ctx) {
+                ctx.send_viewport_cmd(center_cmd);
+            }
+        };
+
+        match self.app_screen {
+            AppScreen::Splash => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(
+                    SPLASH_WINDOW_SIZE,
+                    SPLASH_WINDOW_SIZE,
+                )));
+                ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(vec2(
+                    SPLASH_WINDOW_SIZE,
+                    SPLASH_WINDOW_SIZE,
+                )));
+                ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(vec2(
+                    SPLASH_WINDOW_SIZE,
+                    SPLASH_WINDOW_SIZE,
+                )));
+                center_on_active_screen();
+            }
+            AppScreen::Login => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(
+                    LOGIN_WINDOW_DEFAULT_SIZE[0],
+                    LOGIN_WINDOW_DEFAULT_SIZE[1],
+                )));
+                ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(vec2(
+                    LOGIN_WINDOW_MIN_SIZE[0],
+                    LOGIN_WINDOW_MIN_SIZE[1],
+                )));
+                ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(vec2(
+                    10_000.0, 10_000.0,
+                )));
+                center_on_active_screen();
+            }
+            AppScreen::Studio => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(
+                    STUDIO_WINDOW_SIZE[0],
+                    STUDIO_WINDOW_SIZE[1],
+                )));
+                ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(vec2(960.0, 640.0)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(vec2(
+                    10_000.0, 10_000.0,
+                )));
+                center_on_active_screen();
+            }
+        }
+
+        self.viewport_configured_for = Some(self.app_screen);
+    }
+
     fn login_screen(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.centered_and_justified(|ui| {
-                Self::surface_panel().show(ui, |ui| {
-                    ui.set_width(ui.available_width().min(760.0));
-                    ui.set_height(ui.available_height().min(320.0));
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            self.draw_mark(ui);
-                            ui.label(
-                                RichText::new("Technical Application Login")
-                                    .size(18.0)
-                                    .strong(),
-                            );
-                            ui.label(
-                                RichText::new(
-                                    "Secure sign-in for BAS estimating, drawings, and controls engineering.",
-                                )
-                                .size(13.0)
-                                .color(Color32::from_gray(190)),
-                            );
-                        });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::default().fill(Color32::from_rgb(14, 19, 30)))
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space((ui.available_height() * 0.12).max(18.0));
 
-                        ui.separator();
+                    let card_width = ui.available_width().min(900.0);
+                    Self::surface_panel().show(ui, |ui| {
+                        ui.set_width(card_width);
 
-                        ui.vertical(|ui| {
-                            ui.set_min_width(340.0);
-                            Self::card_frame_with_alpha(18).show(ui, |ui| {
-                                ui.label(RichText::new("Operator ID").strong());
-                                ui.text_edit_singleline(&mut self.login_username);
-                                ui.label(RichText::new("Passphrase").strong());
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.login_password)
-                                        .password(true),
+                        ui.columns(2, |columns| {
+                            columns[0].vertical_centered(|ui| {
+                                self.draw_mark(ui);
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new("Technical Application Login")
+                                        .size(24.0)
+                                        .strong(),
                                 );
-                                ui.add_space(8.0);
-                                if ui
-                                    .add_sized(
-                                        [ui.available_width(), 30.0],
-                                        egui::Button::new(RichText::new("Authenticate").strong()),
+                                ui.label(
+                                    RichText::new(
+                                        "Secure sign-in for BAS estimating, drawings, and controls engineering.",
                                     )
-                                    .clicked()
-                                {
-                                    if self.login_username.trim().is_empty()
-                                        || self.login_password.trim().is_empty()
-                                    {
-                                        self.login_error =
-                                            Some("Enter operator ID and passphrase.".to_string());
-                                    } else {
-                                        self.login_error = None;
-                                        self.status = format!(
-                                            "Authenticated as {}",
-                                            self.login_username.trim()
-                                        );
-                                        self.app_screen = AppScreen::Studio;
-                                    }
-                                }
-                                if let Some(err) = &self.login_error {
-                                    ui.add_space(4.0);
-                                    ui.label(
-                                        RichText::new(err)
-                                            .color(Color32::from_rgb(255, 130, 130))
-                                            .size(12.0),
-                                    );
-                                }
+                                    .size(14.0)
+                                    .color(Color32::from_gray(196)),
+                                );
                             });
+                            self.render_login_form(&mut columns[1]);
                         });
                     });
                 });
             });
+    }
+
+    fn render_login_form(&mut self, ui: &mut Ui) {
+        ui.set_min_width(360.0);
+        Self::card_frame_with_alpha(18).show(ui, |ui| {
+            ui.label(RichText::new("Operator ID").strong());
+            ui.text_edit_singleline(&mut self.login_username);
+            ui.label(RichText::new("Passphrase").strong());
+            ui.add(egui::TextEdit::singleline(&mut self.login_password).password(true));
+            ui.add_space(8.0);
+            if ui
+                .add_sized(
+                    [ui.available_width(), 30.0],
+                    egui::Button::new(RichText::new("Authenticate").strong()),
+                )
+                .clicked()
+            {
+                if self.login_username.trim().is_empty() || self.login_password.trim().is_empty() {
+                    self.login_error = Some("Enter operator ID and passphrase.".to_string());
+                } else {
+                    self.login_error = None;
+                    self.status = format!("Authenticated as {}", self.login_username.trim());
+                    self.app_screen = AppScreen::Studio;
+                }
+            }
+            if let Some(err) = &self.login_error {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(err)
+                        .color(Color32::from_rgb(255, 130, 130))
+                        .size(12.0),
+                );
+            }
         });
     }
 
@@ -3309,8 +3378,9 @@ impl AutoMateApp {
 
 impl App for AutoMateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        self.configure_viewport_for_screen(ctx);
         self.handle_shortcuts(ctx);
-        if self.app_screen != AppScreen::Splash {
+        if self.app_screen == AppScreen::Studio {
             self.draw_studio_background(ctx);
         }
         ctx.set_pixels_per_point(self.project.settings.ui_scale);
