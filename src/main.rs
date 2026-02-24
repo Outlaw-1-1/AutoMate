@@ -1898,53 +1898,52 @@ impl AutoMateApp {
     }
 
     fn titlebar(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        // Custom draggable top title bar for borderless viewport mode.
-        egui::TopBottomPanel::top("titlebar")
-            .frame(Self::surface_panel())
-            .show(ctx, |ui| {
-                let title_rect = ui.max_rect();
-                let drag = ui.interact(title_rect, ui.id().with("titlebar_drag"), Sense::drag());
-                if drag.drag_started() || drag.dragged() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                }
+        let panel = egui::TopBottomPanel::top("titlebar").frame(Self::surface_panel());
 
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("AutoMate BAS Studio")
-                            .font(FontId::new(22.0, FontFamily::Proportional))
-                            .color(self.accent()),
-                    );
-                    ui.separator();
-                    ui.label(
-                        RichText::new(format!("PROJECT  {}", self.project.name.to_uppercase()))
-                            .font(FontId::new(11.0, FontFamily::Monospace))
-                            .color(Color32::from_rgba_unmultiplied(215, 215, 220, 190)),
-                    );
+        panel.show(ctx, |ui| {
+            let title_rect = ui.max_rect();
+            let drag = ui.interact(title_rect, ui.id().with("titlebar_drag"), Sense::drag());
+            if drag.drag_started() || drag.dragged() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add_sized([28.0, 22.0], egui::Button::new("x")).clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("AutoMate BAS Studio")
+                        .font(FontId::new(22.0, FontFamily::Proportional))
+                        .color(self.accent()),
+                );
+                ui.separator();
+                ui.label(
+                    RichText::new(format!("PROJECT  {}", self.project.name.to_uppercase()))
+                        .font(FontId::new(11.0, FontFamily::Monospace))
+                        .color(Color32::from_rgba_unmultiplied(215, 215, 220, 190)),
+                );
 
-                        if ui
-                            .add_sized(
-                                [28.0, 22.0],
-                                egui::Button::new(if self.is_fullscreen { "🗗" } else { "🗖" }),
-                            )
-                            .clicked()
-                        {
-                            self.is_fullscreen = !self.is_fullscreen;
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(
-                                self.is_fullscreen,
-                            ));
-                        }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_sized([28.0, 22.0], egui::Button::new("x")).clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
 
-                        if ui.add_sized([28.0, 22.0], egui::Button::new("—")).clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                        }
-                    });
+                    if ui
+                        .add_sized(
+                            [28.0, 22.0],
+                            egui::Button::new(if self.is_fullscreen { "🗗" } else { "🗖" }),
+                        )
+                        .clicked()
+                    {
+                        self.is_fullscreen = !self.is_fullscreen;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(
+                            self.is_fullscreen,
+                        ));
+                    }
+
+                    if ui.add_sized([28.0, 22.0], egui::Button::new("—")).clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    }
                 });
             });
+        });
     }
 
     fn toolbar_dropdowns(&mut self, ui: &mut Ui) {
