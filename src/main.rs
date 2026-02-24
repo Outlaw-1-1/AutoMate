@@ -1907,6 +1907,7 @@ impl AutoMateApp {
                 if drag.drag_started() || drag.dragged() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
+
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("AutoMate BAS Studio")
@@ -1919,10 +1920,12 @@ impl AutoMateApp {
                             .font(FontId::new(11.0, FontFamily::Monospace))
                             .color(Color32::from_rgba_unmultiplied(215, 215, 220, 190)),
                     );
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add_sized([28.0, 22.0], egui::Button::new("x")).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
+
                         if ui
                             .add_sized(
                                 [28.0, 22.0],
@@ -1935,6 +1938,7 @@ impl AutoMateApp {
                                 self.is_fullscreen,
                             ));
                         }
+
                         if ui.add_sized([28.0, 22.0], egui::Button::new("—")).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
