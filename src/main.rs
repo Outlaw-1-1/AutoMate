@@ -1898,6 +1898,7 @@ impl AutoMateApp {
     }
 
     fn titlebar(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        // Custom draggable top title bar for borderless viewport mode.
         egui::TopBottomPanel::top("titlebar")
             .frame(Self::surface_panel())
             .show(ctx, |ui| {
