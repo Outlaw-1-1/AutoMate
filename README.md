@@ -28,25 +28,23 @@ A Rust desktop prototype for data-driven BAS estimating and submittal workflows.
 - **Template-driven engineering:** equipment templates with point generation and dual hour modes (static / points-based).
 - **Estimating:** calibrated labor model with complexity/renovation/integration factors and QA/PM/risk overhead.
 - **Project data lifecycle:** save/load obfuscated `.m8` bundles (ZIP + JSON + assets), autosave, markdown proposal export.
+- **Data interoperability:** one-click object CSV export, JSON Schema export for the `.m8` model, and in-app health diagnostics.
 - **Drawings overlay:** PDF/image-backed canvas with drag/drop tokens, route lines, undo/redo, and object-linked nodes.
 
 ## Crates integrated in this iteration
 
 - `chrono`: readable local timestamps in proposal exports.
-- `itertools`: concise join logic for object-mix summaries in exported markdown.
+- `itertools`: concise join logic for object-mix summaries and duplicate-ID diagnostics.
 - `uuid`: stable project identity (`project_uuid`) for autosave naming and cross-file traceability.
 - `directories`: OS-native autosave fallback directory for unsaved projects.
 - `thiserror`: typed I/O/serialization/archive errors for cleaner save/load flow.
-
-## Crate adoption opportunities
-
-High-value public crates that can be integrated next:
-
-- `tracing` + `tracing-subscriber` for structured diagnostics and performance telemetry.
-- `anyhow` for higher-level context-rich error propagation in command-style workflows.
-- `rayon` for parallel heavy operations (PDF rasterization, large template expansions).
-- `strum` for enum iteration/labels to reduce UI boilerplate around object and point types.
-- `schemars` to generate JSON schema for project/template files and improve compatibility checks.
+- `tracing` + `tracing-subscriber`: structured telemetry for app launch and export operations.
+- `anyhow`: context-rich, composable error handling for schema/CSV exports.
+- `rayon`: parallelized object health analysis for large project graphs.
+- `strum`: enum iteration to simplify workspace tab rendering.
+- `schemars`: generated JSON Schema export for project contracts.
+- `once_cell`: lightweight static app metadata and one-time runtime initialization.
+- `csv`: native object inventory export for downstream reporting workflows.
 
 ## Run
 

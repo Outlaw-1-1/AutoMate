@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use chrono::Local;
 use directories::ProjectDirs;
 use eframe::{
@@ -8,21 +9,42 @@ use eframe::{
     App, CreationContext, Frame, NativeOptions,
 };
 use itertools::Itertools;
+use once_cell::sync::Lazy;
 use pdfium_render::prelude::*;
+use rayon::prelude::*;
 use rfd::FileDialog;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     io::{Cursor, Read, Write},
     path::{Path, PathBuf},
+    sync::Once,
     time::Instant,
 };
+use strum::{EnumIter, IntoEnumIterator};
 use thiserror::Error;
+use tracing::{info, warn};
 use uuid::Uuid;
 use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
+static LOG_INIT: Once = Once::new();
+static PRODUCT_TAG: Lazy<String> = Lazy::new(|| "AutoMate BAS Studio".to_string());
+
+fn init_telemetry() {
+    LOG_INIT.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_target(false)
+            .compact()
+            .init();
+    });
+}
+
 fn main() -> eframe::Result<()> {
+    init_telemetry();
+    info!("launching {}", PRODUCT_TAG.as_str());
     let options = NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_fullscreen(false)
@@ -40,7 +62,7 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter)]
 enum ToolView {
     ProjectSettings,
     HoursEstimator,
@@ -98,7 +120,9 @@ impl ToolView {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, EnumIter, JsonSchema,
+)]
 enum ObjectType {
     Building,
     Controller,
@@ -126,19 +150,19 @@ impl ObjectType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 struct PropertyGroup {
     name: String,
     items: Vec<PropertyItem>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 struct PropertyItem {
     key: String,
     value: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct BasObject {
     id: u64,
     parent_id: Option<u64>,
@@ -181,7 +205,7 @@ struct BasObject {
     property_groups: Vec<PropertyGroup>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 struct OverlayNode {
     id: u64,
     object_id: u64,
@@ -189,13 +213,13 @@ struct OverlayNode {
     y: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 struct OverlayLine {
     from: [f32; 2],
     to: [f32; 2],
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct AppSettings {
     accent_color: [u8; 4],
     company_name: String,
@@ -216,7 +240,7 @@ impl Default for AppSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 struct ProposalData {
     project_number: String,
     client_name: String,
@@ -238,7 +262,7 @@ struct ProposalData {
     exclusions: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct HourLine {
     name: String,
     category: String,
@@ -257,7 +281,7 @@ impl Default for HourLine {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct EstimatorSettings {
     complexity_factor: f32,
     renovation_factor: f32,
@@ -280,14 +304,14 @@ impl Default for EstimatorSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, JsonSchema)]
 enum HourCalculationMode {
     #[default]
     StaticByEquipment,
     PointsBased,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct EquipmentTemplate {
     name: String,
     equipment_type: String,
@@ -302,7 +326,7 @@ struct EquipmentTemplate {
     commissioning_hours_per_point: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, EnumIter, JsonSchema)]
 enum PointKind {
     #[default]
     AI,
@@ -344,7 +368,7 @@ impl PointKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 struct TemplatePoint {
     name: String,
     #[serde(default)]
@@ -410,7 +434,7 @@ fn default_project_uuid() -> Uuid {
     Uuid::new_v4()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct Project {
     name: String,
     notes: String,
@@ -1395,12 +1419,7 @@ impl AutoMateApp {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Workspace").strong().size(16.0));
             ui.separator();
-            for view in [
-                ToolView::ProjectSettings,
-                ToolView::HoursEstimator,
-                ToolView::DrawingsOverlay,
-                ToolView::Templates,
-            ] {
+            for view in ToolView::iter() {
                 let is_selected = self.current_view == view;
                 if ui.selectable_label(is_selected, view.label()).clicked() {
                     self.current_view = view;
@@ -1799,6 +1818,179 @@ impl AutoMateApp {
         }
     }
 
+    fn project_health_summary(&self) -> Result<String> {
+        #[derive(Debug)]
+        struct HealthCounters {
+            buildings: usize,
+            controllers: usize,
+            equipment: usize,
+            points: usize,
+            orphaned: usize,
+            duplicates: usize,
+        }
+
+        let ids: HashSet<u64> = self.project.objects.iter().map(|o| o.id).collect();
+        let duplicate_ids = self
+            .project
+            .objects
+            .iter()
+            .map(|o| o.id)
+            .counts()
+            .into_iter()
+            .filter(|(_, count)| *count > 1)
+            .count();
+
+        let counters = self
+            .project
+            .objects
+            .par_iter()
+            .fold(
+                || HealthCounters {
+                    buildings: 0,
+                    controllers: 0,
+                    equipment: 0,
+                    points: 0,
+                    orphaned: 0,
+                    duplicates: 0,
+                },
+                |mut acc, obj| {
+                    match obj.object_type {
+                        ObjectType::Building => acc.buildings += 1,
+                        ObjectType::Controller => acc.controllers += 1,
+                        ObjectType::Equipment => acc.equipment += 1,
+                        ObjectType::Point => acc.points += 1,
+                    }
+                    if let Some(parent_id) = obj.parent_id {
+                        if !ids.contains(&parent_id) {
+                            acc.orphaned += 1;
+                        }
+                    }
+                    acc
+                },
+            )
+            .reduce(
+                || HealthCounters {
+                    buildings: 0,
+                    controllers: 0,
+                    equipment: 0,
+                    points: 0,
+                    orphaned: 0,
+                    duplicates: 0,
+                },
+                |mut a, b| {
+                    a.buildings += b.buildings;
+                    a.controllers += b.controllers;
+                    a.equipment += b.equipment;
+                    a.points += b.points;
+                    a.orphaned += b.orphaned;
+                    a.duplicates += b.duplicates;
+                    a
+                },
+            );
+
+        let mut warnings = Vec::new();
+        if counters.buildings == 0 {
+            warnings.push("No building root object found");
+        }
+        if duplicate_ids > 0 {
+            warnings.push("Duplicate object IDs detected");
+        }
+        if counters.orphaned > 0 {
+            warnings.push("Some objects reference missing parents");
+        }
+
+        let warning_text = if warnings.is_empty() {
+            "None".to_string()
+        } else {
+            warnings.join(", ")
+        };
+
+        Ok(format!(
+            "Health Check • Buildings: {} • Controllers: {} • Equipment: {} • Points: {} • Orphaned: {} • Duplicate IDs: {} • Warnings: {}",
+            counters.buildings,
+            counters.controllers,
+            counters.equipment,
+            counters.points,
+            counters.orphaned,
+            duplicate_ids,
+            warning_text
+        ))
+    }
+
+    fn export_project_schema(&mut self) {
+        let Some(path) = FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .set_file_name("project.schema.json")
+            .save_file()
+        else {
+            return;
+        };
+
+        let schema = schemars::schema_for!(Project);
+        let payload = (|| -> Result<String> {
+            serde_json::to_string_pretty(&schema).context("failed to serialize schema")
+        })();
+
+        match payload.and_then(|body| fs::write(&path, body).context("failed to write schema")) {
+            Ok(_) => {
+                self.status = format!("Exported schema {}", path.display());
+                info!("exported schema to {}", path.display());
+            }
+            Err(err) => {
+                self.status = format!("Schema export failed: {err:#}");
+                warn!("schema export failed: {err:#}");
+            }
+        }
+    }
+
+    fn export_objects_csv(&mut self) {
+        let Some(path) = FileDialog::new()
+            .add_filter("CSV", &["csv"])
+            .set_file_name("objects.csv")
+            .save_file()
+        else {
+            return;
+        };
+
+        let write_result = (|| -> Result<()> {
+            let mut writer =
+                csv::Writer::from_path(&path).context("failed to create csv writer")?;
+            writer.write_record([
+                "id",
+                "parent_id",
+                "type",
+                "name",
+                "template_name",
+                "equipment_type",
+                "point_kind",
+            ])?;
+            for object in &self.project.objects {
+                writer.write_record([
+                    object.id.to_string(),
+                    object
+                        .parent_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_default(),
+                    object.object_type.label().to_string(),
+                    object.name.clone(),
+                    object.template_name.clone(),
+                    object.equipment_type.clone(),
+                    object.point_kind.label().to_string(),
+                ])?;
+            }
+            writer.flush()?;
+            Ok(())
+        })();
+
+        match write_result {
+            Ok(_) => {
+                self.status = format!("Exported objects CSV {}", path.display());
+                info!("exported csv to {}", path.display());
+            }
+            Err(err) => self.status = format!("CSV export failed: {err:#}"),
+        }
+    }
+
     fn push_overlay_history(&mut self) {
         self.overlay_undo_stack.push((
             self.project.overlay_nodes.clone(),
@@ -1973,6 +2165,21 @@ impl AutoMateApp {
                 }
                 if ui.button("Export Proposal (Markdown)").clicked() {
                     self.export_proposal_markdown();
+                    ui.close_menu();
+                }
+                if ui.button("Export Objects (CSV)").clicked() {
+                    self.export_objects_csv();
+                    ui.close_menu();
+                }
+                if ui.button("Export Project Schema (JSON)").clicked() {
+                    self.export_project_schema();
+                    ui.close_menu();
+                }
+                if ui.button("Run Health Check").clicked() {
+                    self.status = match self.project_health_summary() {
+                        Ok(summary) => summary,
+                        Err(err) => format!("Health check failed: {err:#}"),
+                    };
                     ui.close_menu();
                 }
             });
