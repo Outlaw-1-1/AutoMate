@@ -11,6 +11,7 @@ use eframe::{
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use pdfium_render::prelude::*;
+use printpdf::{BuiltinFont, Mm, PdfDocument};
 use rayon::prelude::*;
 use rfd::FileDialog;
 use schemars::JsonSchema;
@@ -240,6 +241,33 @@ impl Default for AppSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct ExportSettings {
+    hours_breakout: bool,
+    bill_of_materials: bool,
+    project_settings_and_proposal_inputs: bool,
+    included_equipment_ids: BTreeSet<u64>,
+}
+
+impl Default for ExportSettings {
+    fn default() -> Self {
+        Self {
+            hours_breakout: true,
+            bill_of_materials: true,
+            project_settings_and_proposal_inputs: true,
+            included_equipment_ids: BTreeSet::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+struct OverlayPageData {
+    #[serde(default)]
+    nodes: Vec<OverlayNode>,
+    #[serde(default)]
+    lines: Vec<OverlayLine>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 struct ProposalData {
     project_number: String,
@@ -441,8 +469,14 @@ struct Project {
     proposal: ProposalData,
     objects: Vec<BasObject>,
     overlay_pdf: Option<String>,
+    #[serde(default)]
+    overlay_pages: BTreeMap<usize, OverlayPageData>,
+    #[serde(default)]
     overlay_nodes: Vec<OverlayNode>,
+    #[serde(default)]
     overlay_lines: Vec<OverlayLine>,
+    #[serde(default)]
+    export_settings: ExportSettings,
     #[serde(skip, default)]
     templates: Vec<EquipmentTemplate>,
     #[serde(default)]
@@ -496,8 +530,10 @@ impl Default for Project {
             proposal: ProposalData::default(),
             objects: vec![building],
             overlay_pdf: None,
+            overlay_pages: BTreeMap::new(),
             overlay_nodes: vec![],
             overlay_lines: vec![],
+            export_settings: ExportSettings::default(),
             templates: vec![
                 EquipmentTemplate::default(),
                 EquipmentTemplate {
@@ -590,8 +626,8 @@ struct AutoMateApp {
     overlay_pdf_bytes: Option<Vec<u8>>,
     overlay_texture: Option<TextureHandle>,
     last_autosave_at: Instant,
-    overlay_undo_stack: Vec<(Vec<OverlayNode>, Vec<OverlayLine>)>,
-    overlay_redo_stack: Vec<(Vec<OverlayNode>, Vec<OverlayLine>)>,
+    overlay_undo_stack: Vec<(usize, Vec<OverlayNode>, Vec<OverlayLine>)>,
+    overlay_redo_stack: Vec<(usize, Vec<OverlayNode>, Vec<OverlayLine>)>,
     pending_overlay_drop: Option<(ObjectType, [f32; 2])>,
     show_adjustment_popup: bool,
     left_sidebar_collapsed: bool,
@@ -766,7 +802,7 @@ impl AutoMateApp {
     fn apply_recommended_settings(&mut self) {
         self.project.settings.autosave_minutes =
             self.project.settings.autosave_minutes.clamp(1, 15);
-        self.project.settings.ui_scale = self.project.settings.ui_scale.clamp(0.95, 1.25);
+        self.project.settings.ui_scale = 1.0;
         if self.project.settings.company_name.trim().is_empty() {
             self.project.settings.company_name = "AutoMate Controls".to_string();
         }
@@ -793,7 +829,7 @@ impl AutoMateApp {
 
     fn surface_panel() -> egui::Frame {
         egui::Frame::default()
-            .fill(Color32::from_rgba_unmultiplied(18, 23, 34, 236))
+            .fill(Color32::from_rgba_unmultiplied(18, 23, 34, 210))
             .stroke(egui::Stroke::new(
                 1.0,
                 Color32::from_rgba_unmultiplied(255, 255, 255, 20),
@@ -811,7 +847,7 @@ impl AutoMateApp {
 
     fn card_frame() -> egui::Frame {
         egui::Frame::default()
-            .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 4))
+            .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 2))
             .stroke(egui::Stroke::new(
                 1.0,
                 Color32::from_rgba_unmultiplied(255, 255, 255, 20),
@@ -1284,8 +1320,7 @@ impl AutoMateApp {
         }
 
         if let Some(template) = self
-            .project
-            .templates
+            .user_templates
             .iter()
             .find(|t| t.name == eq.template_name)
             .cloned()
@@ -1336,6 +1371,30 @@ impl AutoMateApp {
             self.overview_texture =
                 Some(ctx.load_texture("overview_image", color_image, egui::TextureOptions::LINEAR));
         }
+    }
+
+    fn sync_all_equipment_from_templates(&mut self) {
+        let ids: Vec<u64> = self
+            .project
+            .objects
+            .iter()
+            .filter(|o| o.object_type == ObjectType::Equipment)
+            .map(|o| o.id)
+            .collect();
+        for id in ids {
+            self.sync_equipment_from_template(id);
+        }
+    }
+
+    fn current_overlay_page_mut(&mut self) -> &mut OverlayPageData {
+        self.project
+            .overlay_pages
+            .entry(self.overlay_pdf_page)
+            .or_default()
+    }
+
+    fn current_overlay_page(&self) -> Option<&OverlayPageData> {
+        self.project.overlay_pages.get(&self.overlay_pdf_page)
     }
 
     fn refresh_overlay_texture(&mut self, ctx: &egui::Context) {
@@ -1565,6 +1624,14 @@ impl AutoMateApp {
             .objects
             .retain(|obj| !to_remove.contains(&obj.id));
         self.project
+            .export_settings
+            .included_equipment_ids
+            .retain(|id| !to_remove.contains(id));
+        self.project.overlay_pages.values_mut().for_each(|page| {
+            page.nodes
+                .retain(|node| !to_remove.contains(&node.object_id))
+        });
+        self.project
             .overlay_nodes
             .retain(|node| !to_remove.contains(&node.object_id));
 
@@ -1635,8 +1702,9 @@ impl AutoMateApp {
             return;
         }
         self.push_overlay_history();
-        self.project.overlay_nodes.push(OverlayNode {
-            id: self.project.next_id,
+        let node_id = self.project.next_id;
+        self.current_overlay_page_mut().nodes.push(OverlayNode {
+            id: node_id,
             object_id,
             x: pos[0],
             y: pos[1],
@@ -1664,9 +1732,32 @@ impl AutoMateApp {
         });
 
         let valid_ids: BTreeSet<u64> = self.project.objects.iter().map(|o| o.id).collect();
-        self.project
-            .overlay_nodes
-            .retain(|node| valid_ids.contains(&node.object_id));
+        if !self.project.overlay_nodes.is_empty() || !self.project.overlay_lines.is_empty() {
+            self.project
+                .overlay_pages
+                .entry(0)
+                .or_default()
+                .nodes
+                .extend(
+                    self.project
+                        .overlay_nodes
+                        .iter()
+                        .filter(|node| valid_ids.contains(&node.object_id))
+                        .cloned(),
+                );
+            self.project
+                .overlay_pages
+                .entry(0)
+                .or_default()
+                .lines
+                .extend(self.project.overlay_lines.clone());
+            self.project.overlay_nodes.clear();
+            self.project.overlay_lines.clear();
+        }
+        for page in self.project.overlay_pages.values_mut() {
+            page.nodes
+                .retain(|node| valid_ids.contains(&node.object_id));
+        }
 
         let equipment_ids: Vec<u64> = self
             .project
@@ -1770,6 +1861,134 @@ impl AutoMateApp {
         match self.save_project_to_path(&path) {
             Ok(_) => self.status = format!("Autosaved {}", path.display()),
             Err(e) => self.status = format!("Autosave failed: {e}"),
+        }
+    }
+
+    fn export_project_pdf(&mut self) {
+        let Some(path) = FileDialog::new()
+            .add_filter("PDF", &["pdf"])
+            .set_file_name("project-export.pdf")
+            .save_file()
+        else {
+            return;
+        };
+
+        let (doc, page, layer) = PdfDocument::new(
+            &format!("{} Export", self.project.name),
+            Mm(215.9),
+            Mm(279.4),
+            "Layer 1",
+        );
+        let current_layer = doc.get_page(page).get_layer(layer);
+        let font = match doc.add_builtin_font(BuiltinFont::Helvetica) {
+            Ok(font) => font,
+            Err(err) => {
+                self.status = format!("PDF export failed: {err}");
+                return;
+            }
+        };
+
+        let mut y: f32 = 270.0;
+        let write = |text: String, size: f32, y_ref: &mut f32| {
+            current_layer.use_text(text, size, Mm(15.0), Mm(*y_ref), &font);
+            *y_ref -= if size > 14.0 { 8.0 } else { 6.0 };
+        };
+
+        write(self.project.name.clone(), 20.0, &mut y);
+        write(
+            format!("Exported {}", Local::now().format("%Y-%m-%d %H:%M")),
+            11.0,
+            &mut y,
+        );
+        y -= 4.0;
+
+        if self.project.export_settings.hours_breakout {
+            let (eng, gfx, cx, custom, overhead, total) = self.estimate_hours();
+            write("Hours Breakout".to_string(), 14.0, &mut y);
+            write(format!("Engineering: {:.1} h", eng), 10.0, &mut y);
+            write(format!("Graphics/Submittals: {:.1} h", gfx), 10.0, &mut y);
+            write(format!("Commissioning: {:.1} h", cx), 10.0, &mut y);
+            write(format!("Custom Lines: {:.1} h", custom), 10.0, &mut y);
+            write(format!("Overhead/Risk: {:.1} h", overhead), 10.0, &mut y);
+            write(format!("Total: {:.1} h", total), 10.0, &mut y);
+            y -= 2.0;
+        }
+
+        if self.project.export_settings.bill_of_materials {
+            write("Bill of Materials (Controllers)".to_string(), 14.0, &mut y);
+            for c in self
+                .project
+                .objects
+                .iter()
+                .filter(|o| o.object_type == ObjectType::Controller)
+            {
+                write(
+                    format!(
+                        "• {} | {} | {}",
+                        c.name, c.controller_type, c.controller_license
+                    ),
+                    10.0,
+                    &mut y,
+                );
+            }
+            y -= 2.0;
+        }
+
+        if self
+            .project
+            .export_settings
+            .project_settings_and_proposal_inputs
+        {
+            let p = &self.project.proposal;
+            write(
+                "Project Settings & Proposal Inputs".to_string(),
+                14.0,
+                &mut y,
+            );
+            write(format!("Project #: {}", p.project_number), 10.0, &mut y);
+            write(format!("Client: {}", p.client_name), 10.0, &mut y);
+            write(format!("Owner: {}", p.owner), 10.0, &mut y);
+            write(format!("Location: {}", p.project_location), 10.0, &mut y);
+            write(format!("Proposal #: {}", p.proposal_number), 10.0, &mut y);
+            write(format!("Revision: {}", p.revision), 10.0, &mut y);
+            write(format!("Prepared By: {}", p.prepared_by), 10.0, &mut y);
+            y -= 2.0;
+        }
+
+        write(
+            "Equipment Included for Automation".to_string(),
+            14.0,
+            &mut y,
+        );
+        for eq in self.project.objects.iter().filter(|o| {
+            o.object_type == ObjectType::Equipment
+                && (self
+                    .project
+                    .export_settings
+                    .included_equipment_ids
+                    .is_empty()
+                    || self
+                        .project
+                        .export_settings
+                        .included_equipment_ids
+                        .contains(&o.id))
+        }) {
+            write(
+                format!("• {} [{}]", eq.name, eq.equipment_type),
+                10.0,
+                &mut y,
+            );
+        }
+
+        let result = (|| -> std::io::Result<()> {
+            let mut writer = std::io::BufWriter::new(std::fs::File::create(&path)?);
+            doc.save(&mut writer)
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))
+        })();
+
+        match result {
+            Ok(_) => self.status = format!("Exported PDF {}", path.display()),
+            Err(err) => self.status = format!("PDF export failed: {err}"),
         }
     }
 
@@ -1992,10 +2211,10 @@ impl AutoMateApp {
     }
 
     fn push_overlay_history(&mut self) {
-        self.overlay_undo_stack.push((
-            self.project.overlay_nodes.clone(),
-            self.project.overlay_lines.clone(),
-        ));
+        let page = self.overlay_pdf_page;
+        let overlay = self.current_overlay_page_mut().clone();
+        self.overlay_undo_stack
+            .push((page, overlay.nodes, overlay.lines));
         if self.overlay_undo_stack.len() > 50 {
             self.overlay_undo_stack.remove(0);
         }
@@ -2003,26 +2222,30 @@ impl AutoMateApp {
     }
 
     fn overlay_undo(&mut self) {
-        if let Some((nodes, lines)) = self.overlay_undo_stack.pop() {
-            self.overlay_redo_stack.push((
-                self.project.overlay_nodes.clone(),
-                self.project.overlay_lines.clone(),
-            ));
-            self.project.overlay_nodes = nodes;
-            self.project.overlay_lines = lines;
+        if let Some((page, nodes, lines)) = self.overlay_undo_stack.pop() {
+            let current_page = self.overlay_pdf_page;
+            let current = self.current_overlay_page_mut().clone();
+            self.overlay_redo_stack
+                .push((current_page, current.nodes, current.lines));
+            self.overlay_pdf_page = page;
+            let overlay = self.current_overlay_page_mut();
+            overlay.nodes = nodes;
+            overlay.lines = lines;
             self.active_line_start = None;
             self.status = "Overlay undo applied".to_string();
         }
     }
 
     fn overlay_redo(&mut self) {
-        if let Some((nodes, lines)) = self.overlay_redo_stack.pop() {
-            self.overlay_undo_stack.push((
-                self.project.overlay_nodes.clone(),
-                self.project.overlay_lines.clone(),
-            ));
-            self.project.overlay_nodes = nodes;
-            self.project.overlay_lines = lines;
+        if let Some((page, nodes, lines)) = self.overlay_redo_stack.pop() {
+            let current_page = self.overlay_pdf_page;
+            let current = self.current_overlay_page_mut().clone();
+            self.overlay_undo_stack
+                .push((current_page, current.nodes, current.lines));
+            self.overlay_pdf_page = page;
+            let overlay = self.current_overlay_page_mut();
+            overlay.nodes = nodes;
+            overlay.lines = lines;
             self.active_line_start = None;
             self.status = "Overlay redo applied".to_string();
         }
@@ -2161,6 +2384,10 @@ impl AutoMateApp {
                 }
                 if ui.button("Load").clicked() {
                     self.load_project(ui.ctx());
+                    ui.close_menu();
+                }
+                if ui.button("Export Official PDF").clicked() {
+                    self.export_project_pdf();
                     ui.close_menu();
                 }
                 if ui.button("Export Proposal (Markdown)").clicked() {
@@ -2498,7 +2725,7 @@ impl AutoMateApp {
         if duplicate_clicked {
             self.duplicate_object(id);
         }
-        if delete_clicked && obj.object_type != ObjectType::Building {
+        if delete_clicked {
             self.remove_object_subtree(id);
         }
 
@@ -2752,11 +2979,7 @@ impl AutoMateApp {
                 });
 
                 if delete_clicked {
-                    if self.project.objects[index].object_type == ObjectType::Building {
-                        self.status = "Delete blocked: building is required at root".to_string();
-                    } else {
-                        self.remove_object_subtree(id);
-                    }
+                    self.remove_object_subtree(id);
                 }
 
                 if template_changed || override_changed {
@@ -2852,6 +3075,56 @@ impl AutoMateApp {
                     ui.label(RichText::new("Exclusions").strong());
                     ui.text_edit_multiline(&mut self.project.proposal.exclusions);
                 });
+            });
+
+            ui.add_space(8.0);
+            Self::card_frame().show(ui, |ui| {
+                ui.label(RichText::new("Official Export Options").strong());
+                ui.checkbox(
+                    &mut self.project.export_settings.hours_breakout,
+                    "Hours breakout",
+                );
+                ui.checkbox(
+                    &mut self.project.export_settings.bill_of_materials,
+                    "Bill of material (controllers)",
+                );
+                ui.checkbox(
+                    &mut self
+                        .project
+                        .export_settings
+                        .project_settings_and_proposal_inputs,
+                    "Project settings & proposal inputs",
+                );
+                ui.separator();
+                ui.label("Equipment included for automation export");
+                for eq in self
+                    .project
+                    .objects
+                    .iter()
+                    .filter(|o| o.object_type == ObjectType::Equipment)
+                {
+                    let mut included = self
+                        .project
+                        .export_settings
+                        .included_equipment_ids
+                        .contains(&eq.id);
+                    if ui.checkbox(&mut included, &eq.name).changed() {
+                        if included {
+                            self.project
+                                .export_settings
+                                .included_equipment_ids
+                                .insert(eq.id);
+                        } else {
+                            self.project
+                                .export_settings
+                                .included_equipment_ids
+                                .remove(&eq.id);
+                        }
+                    }
+                }
+                if ui.button("Export Official PDF").clicked() {
+                    self.export_project_pdf();
+                }
             });
         });
     }
@@ -3167,6 +3440,7 @@ impl AutoMateApp {
             }
             if templates_dirty {
                 self.save_user_templates();
+                self.sync_all_equipment_from_templates();
             }
         });
     }
@@ -3192,6 +3466,9 @@ impl AutoMateApp {
                             self.overlay_texture = None;
                             self.overlay_pdf_page = 0;
                             self.overlay_pdf_page_count = 0;
+                            self.project.overlay_pages.clear();
+                            self.overlay_undo_stack.clear();
+                            self.overlay_redo_stack.clear();
                             self.status = "Loaded overlay PDF".to_string();
                         }
                         Err(err) => self.status = format!("PDF load failed: {err}"),
@@ -3246,10 +3523,10 @@ impl AutoMateApp {
                 }
             }
             ui.separator();
-            if ui.button("↶ Undo").clicked() {
+            if ui.button("⮪").on_hover_text("Undo").clicked() {
                 self.overlay_undo();
             }
-            if ui.button("↷ Redo").clicked() {
+            if ui.button("⮫").on_hover_text("Redo").clicked() {
                 self.overlay_redo();
             }
         });
@@ -3351,7 +3628,11 @@ impl AutoMateApp {
                     }
                 }
 
-                for node in &self.project.overlay_nodes {
+                for node in self
+                    .current_overlay_page()
+                    .map(|p| p.nodes.as_slice())
+                    .unwrap_or(&[])
+                {
                     let center = egui::pos2(
                         draw_rect.left() + node.x * self.overlay_zoom,
                         draw_rect.top() + node.y * self.overlay_zoom,
@@ -3391,7 +3672,11 @@ impl AutoMateApp {
                     );
                 }
 
-                for line in &self.project.overlay_lines {
+                for line in self
+                    .current_overlay_page()
+                    .map(|p| p.lines.as_slice())
+                    .unwrap_or(&[])
+                {
                     let a = egui::pos2(
                         draw_rect.left() + line.from[0] * self.overlay_zoom,
                         draw_rect.top() + line.from[1] * self.overlay_zoom,
@@ -3417,10 +3702,12 @@ impl AutoMateApp {
                                     OverlayTool::Route => {
                                         if let Some(start) = self.active_line_start.take() {
                                             self.push_overlay_history();
-                                            self.project.overlay_lines.push(OverlayLine {
-                                                from: start,
-                                                to: local,
-                                            });
+                                            self.current_overlay_page_mut().lines.push(
+                                                OverlayLine {
+                                                    from: start,
+                                                    to: local,
+                                                },
+                                            );
                                         } else {
                                             self.active_line_start = Some(local);
                                         }
@@ -3469,8 +3756,9 @@ impl AutoMateApp {
                                 for (id, name) in candidates {
                                     if ui.button(name).clicked() {
                                         self.push_overlay_history();
-                                        self.project.overlay_nodes.push(OverlayNode {
-                                            id: self.project.next_id,
+                                        let node_id = self.project.next_id;
+                                        self.current_overlay_page_mut().nodes.push(OverlayNode {
+                                            id: node_id,
                                             object_id: id,
                                             x: pos[0],
                                             y: pos[1],
@@ -3526,10 +3814,17 @@ impl AutoMateApp {
                         egui::Slider::new(&mut self.project.settings.autosave_minutes, 1..=60)
                             .text("Autosave (minutes)"),
                     );
-                    ui.add(
-                        egui::Slider::new(&mut self.project.settings.ui_scale, 0.8..=1.5)
-                            .text("UI Scale"),
-                    );
+                    egui::ComboBox::from_label("UI Scale")
+                        .selected_text(format!("{:.2}", self.project.settings.ui_scale))
+                        .show_ui(ui, |ui| {
+                            for scale in [0.5_f32, 0.75, 1.0, 1.25, 1.5] {
+                                ui.selectable_value(
+                                    &mut self.project.settings.ui_scale,
+                                    scale,
+                                    format!("{scale:.2}"),
+                                );
+                            }
+                        });
                     ui.checkbox(
                         &mut self.project.settings.show_overlay_grid,
                         "Show overlay grid",
@@ -3539,12 +3834,10 @@ impl AutoMateApp {
                     if self.project.settings.autosave_minutes > 15 {
                         ui.colored_label(Color32::YELLOW, "• Consider autosave ≤ 15 minutes.");
                     }
-                    if self.project.settings.ui_scale < 0.95
-                        || self.project.settings.ui_scale > 1.25
-                    {
+                    if ![0.5_f32, 0.75, 1.0, 1.25, 1.5].contains(&self.project.settings.ui_scale) {
                         ui.colored_label(
                             Color32::YELLOW,
-                            "• UI scale between 0.95 and 1.25 is recommended for readability.",
+                            "• Use one of the standard UI scales: 0.50, 0.75, 1.00, 1.25, 1.50.",
                         );
                     }
                     if self.project.settings.company_name.trim().is_empty() {
