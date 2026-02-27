@@ -212,6 +212,14 @@ struct OverlayNode {
     object_id: u64,
     x: f32,
     y: f32,
+    #[serde(default = "default_overlay_scale")]
+    scale: f32,
+    #[serde(default)]
+    rotation_deg: f32,
+}
+
+fn default_overlay_scale() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -317,6 +325,9 @@ struct EstimatorSettings {
     qa_percent: f32,
     project_management_percent: f32,
     risk_percent: f32,
+    schedule_compression_percent: f32,
+    travel_coordination_percent: f32,
+    system_novelty_percent: f32,
 }
 
 impl Default for EstimatorSettings {
@@ -328,6 +339,9 @@ impl Default for EstimatorSettings {
             qa_percent: 8.0,
             project_management_percent: 12.0,
             risk_percent: 5.0,
+            schedule_compression_percent: 0.0,
+            travel_coordination_percent: 0.0,
+            system_novelty_percent: 0.0,
         }
     }
 }
@@ -629,6 +643,9 @@ struct AutoMateApp {
     overlay_undo_stack: Vec<(usize, Vec<OverlayNode>, Vec<OverlayLine>)>,
     overlay_redo_stack: Vec<(usize, Vec<OverlayNode>, Vec<OverlayLine>)>,
     pending_overlay_drop: Option<(ObjectType, [f32; 2])>,
+    selected_overlay_node: Option<u64>,
+    dragging_overlay_node: Option<u64>,
+    overlay_drag_offset: egui::Vec2,
     show_adjustment_popup: bool,
     left_sidebar_collapsed: bool,
     object_search_query: String,
@@ -640,6 +657,10 @@ struct AutoMateApp {
     overlay_pan: egui::Vec2,
     overlay_pdf_page: usize,
     overlay_pdf_page_count: usize,
+    overlay_page_jump_input: String,
+    overlay_snap_to_grid: bool,
+    overlay_snap_to_nodes: bool,
+    overlay_wire_orthogonal: bool,
 }
 
 impl AutoMateApp {
@@ -670,6 +691,9 @@ impl AutoMateApp {
             overlay_undo_stack: vec![],
             overlay_redo_stack: vec![],
             pending_overlay_drop: None,
+            selected_overlay_node: None,
+            dragging_overlay_node: None,
+            overlay_drag_offset: egui::Vec2::ZERO,
             show_adjustment_popup: false,
             left_sidebar_collapsed: false,
             object_search_query: String::new(),
@@ -681,6 +705,10 @@ impl AutoMateApp {
             overlay_pan: egui::Vec2::ZERO,
             overlay_pdf_page: 0,
             overlay_pdf_page_count: 0,
+            overlay_page_jump_input: "1".to_string(),
+            overlay_snap_to_grid: true,
+            overlay_snap_to_nodes: true,
+            overlay_wire_orthogonal: true,
         }
     }
 
@@ -791,7 +819,10 @@ impl AutoMateApp {
         let adjusted = base * factors;
         let overhead_pct = (self.project.estimator.qa_percent
             + self.project.estimator.project_management_percent
-            + self.project.estimator.risk_percent)
+            + self.project.estimator.risk_percent
+            + self.project.estimator.schedule_compression_percent
+            + self.project.estimator.travel_coordination_percent
+            + self.project.estimator.system_novelty_percent)
             .max(0.0);
         let overhead_hours = adjusted * (overhead_pct / 100.0);
         let grand_total = adjusted + overhead_hours;
@@ -820,6 +851,21 @@ impl AutoMateApp {
             .project_management_percent
             .clamp(8.0, 16.0);
         self.project.estimator.risk_percent = self.project.estimator.risk_percent.clamp(3.0, 12.0);
+        self.project.estimator.schedule_compression_percent = self
+            .project
+            .estimator
+            .schedule_compression_percent
+            .clamp(0.0, 20.0);
+        self.project.estimator.travel_coordination_percent = self
+            .project
+            .estimator
+            .travel_coordination_percent
+            .clamp(0.0, 15.0);
+        self.project.estimator.system_novelty_percent = self
+            .project
+            .estimator
+            .system_novelty_percent
+            .clamp(0.0, 18.0);
     }
 
     fn accent(&self) -> Color32 {
@@ -1252,6 +1298,94 @@ impl AutoMateApp {
                 graphics_hours_per_point: 0.12,
                 commissioning_hours: 1.5,
                 commissioning_hours_per_point: 0.18,
+            },
+            EquipmentTemplate {
+                name: "Cooling Tower".to_string(),
+                equipment_type: "CT".to_string(),
+                points: vec![
+                    TemplatePoint::ai("Condenser Water Supply Temp"),
+                    TemplatePoint::ai("Condenser Water Return Temp"),
+                    TemplatePoint::ai("Fan VFD Speed Cmd"),
+                    TemplatePoint::ai("Basin Heater Cmd"),
+                    TemplatePoint::ai("Make-up Valve Cmd"),
+                ],
+                hour_mode: HourCalculationMode::StaticByEquipment,
+                engineering_hours: 3.0,
+                engineering_hours_per_point: 0.22,
+                graphics_hours: 1.2,
+                graphics_hours_per_point: 0.12,
+                commissioning_hours: 2.2,
+                commissioning_hours_per_point: 0.16,
+            },
+            EquipmentTemplate {
+                name: "Pump Skid".to_string(),
+                equipment_type: "Pump".to_string(),
+                points: vec![
+                    TemplatePoint::ai("Run Status"),
+                    TemplatePoint::ai("Run Command"),
+                    TemplatePoint::ai("Differential Pressure"),
+                    TemplatePoint::ai("Lead/Lag"),
+                ],
+                hour_mode: HourCalculationMode::PointsBased,
+                engineering_hours: 2.0,
+                engineering_hours_per_point: 0.24,
+                graphics_hours: 0.8,
+                graphics_hours_per_point: 0.1,
+                commissioning_hours: 1.4,
+                commissioning_hours_per_point: 0.14,
+            },
+            EquipmentTemplate {
+                name: "Heat Pump".to_string(),
+                equipment_type: "HP".to_string(),
+                points: vec![
+                    TemplatePoint::ai("Space Temp"),
+                    TemplatePoint::ai("Run Command"),
+                    TemplatePoint::ai("Mode Command"),
+                    TemplatePoint::ai("Alarm"),
+                    TemplatePoint::ai("Occupancy"),
+                ],
+                hour_mode: HourCalculationMode::StaticByEquipment,
+                engineering_hours: 2.8,
+                engineering_hours_per_point: 0.24,
+                graphics_hours: 1.1,
+                graphics_hours_per_point: 0.1,
+                commissioning_hours: 1.8,
+                commissioning_hours_per_point: 0.15,
+            },
+            EquipmentTemplate {
+                name: "Exhaust Fan".to_string(),
+                equipment_type: "EF".to_string(),
+                points: vec![
+                    TemplatePoint::ai("Run Status"),
+                    TemplatePoint::ai("Run Command"),
+                    TemplatePoint::ai("VFD Speed Cmd"),
+                    TemplatePoint::ai("Fault"),
+                ],
+                hour_mode: HourCalculationMode::PointsBased,
+                engineering_hours: 1.5,
+                engineering_hours_per_point: 0.2,
+                graphics_hours: 0.7,
+                graphics_hours_per_point: 0.08,
+                commissioning_hours: 1.1,
+                commissioning_hours_per_point: 0.12,
+            },
+            EquipmentTemplate {
+                name: "Rooftop Unit".to_string(),
+                equipment_type: "RTU".to_string(),
+                points: vec![
+                    TemplatePoint::ai("Supply Temp"),
+                    TemplatePoint::ai("Mixed Air Temp"),
+                    TemplatePoint::ai("Fan Command"),
+                    TemplatePoint::ai("Damper Command"),
+                    TemplatePoint::ai("Fault"),
+                ],
+                hour_mode: HourCalculationMode::StaticByEquipment,
+                engineering_hours: 3.4,
+                engineering_hours_per_point: 0.25,
+                graphics_hours: 1.3,
+                graphics_hours_per_point: 0.12,
+                commissioning_hours: 2.0,
+                commissioning_hours_per_point: 0.16,
             },
         ]
     }
@@ -1708,9 +1842,40 @@ impl AutoMateApp {
             object_id,
             x: pos[0],
             y: pos[1],
+            scale: 1.0,
+            rotation_deg: 0.0,
         });
         self.project.next_id += 1;
         self.status = "Placed overlay token".to_string();
+    }
+
+    fn overlay_snap_position(&self, mut local: [f32; 2]) -> [f32; 2] {
+        if self.overlay_snap_to_grid {
+            let step = 36.0;
+            local[0] = (local[0] / step).round() * step;
+            local[1] = (local[1] / step).round() * step;
+        }
+
+        if self.overlay_snap_to_nodes {
+            let mut best: Option<([f32; 2], f32)> = None;
+            if let Some(page) = self.current_overlay_page() {
+                for node in &page.nodes {
+                    let dx = node.x - local[0];
+                    let dy = node.y - local[1];
+                    let dist2 = dx * dx + dy * dy;
+                    if dist2 < 24.0 * 24.0 {
+                        if best.is_none_or(|(_, existing)| dist2 < existing) {
+                            best = Some(([node.x, node.y], dist2));
+                        }
+                    }
+                }
+            }
+            if let Some((snap, _)) = best {
+                local = snap;
+            }
+        }
+
+        local
     }
 
     fn object_overlay_color(&self, object_id: u64) -> Color32 {
@@ -1900,7 +2065,27 @@ impl AutoMateApp {
             11.0,
             &mut y,
         );
+        write(
+            format!("Prepared for {}", self.project.proposal.client_name),
+            11.0,
+            &mut y,
+        );
         y -= 4.0;
+
+        write("Proposal Narrative".to_string(), 14.0, &mut y);
+        for line in [
+            format!("Scope: {}", self.project.proposal.scope_summary),
+            format!("Assumptions: {}", self.project.proposal.assumptions),
+            format!("Exclusions: {}", self.project.proposal.exclusions),
+        ] {
+            let content = if line.len() > 120 {
+                format!("{}...", &line[..120])
+            } else {
+                line
+            };
+            write(content, 10.0, &mut y);
+        }
+        y -= 2.0;
 
         if self.project.export_settings.hours_breakout {
             let (eng, gfx, cx, custom, overhead, total) = self.estimate_hours();
@@ -1975,6 +2160,40 @@ impl AutoMateApp {
         }) {
             write(
                 format!("• {} [{}]", eq.name, eq.equipment_type),
+                10.0,
+                &mut y,
+            );
+        }
+
+        y -= 2.0;
+        write("Drawing Overlay Summary".to_string(), 14.0, &mut y);
+        write(
+            format!(
+                "Source drawing: {}",
+                self.project
+                    .overlay_pdf
+                    .clone()
+                    .unwrap_or_else(|| "None".to_string())
+            ),
+            10.0,
+            &mut y,
+        );
+        write(
+            format!(
+                "Overlay pages with markup: {}",
+                self.project.overlay_pages.len()
+            ),
+            10.0,
+            &mut y,
+        );
+        for (page_idx, page) in self.project.overlay_pages.iter().take(5) {
+            write(
+                format!(
+                    "• Page {}: {} object links, {} routed segments",
+                    page_idx + 1,
+                    page.nodes.len(),
+                    page.lines.len()
+                ),
                 10.0,
                 &mut y,
             );
@@ -2210,6 +2429,24 @@ impl AutoMateApp {
         }
     }
 
+    fn export_object_tree_json(&mut self) {
+        let Some(path) = FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .set_file_name("object-tree.json")
+            .save_file()
+        else {
+            return;
+        };
+
+        match serde_json::to_string_pretty(&self.project.objects) {
+            Ok(raw) => match fs::write(&path, raw) {
+                Ok(_) => self.status = format!("Exported object tree {}", path.display()),
+                Err(err) => self.status = format!("Object tree export failed: {err}"),
+            },
+            Err(err) => self.status = format!("Object tree export failed: {err}"),
+        }
+    }
+
     fn push_overlay_history(&mut self) {
         let page = self.overlay_pdf_page;
         let overlay = self.current_overlay_page_mut().clone();
@@ -2398,6 +2635,10 @@ impl AutoMateApp {
                     self.export_objects_csv();
                     ui.close_menu();
                 }
+                if ui.button("Export Object Tree (JSON)").clicked() {
+                    self.export_object_tree_json();
+                    ui.close_menu();
+                }
                 if ui.button("Export Project Schema (JSON)").clicked() {
                     self.export_project_schema();
                     ui.close_menu();
@@ -2540,6 +2781,25 @@ impl AutoMateApp {
             self.add_object(ObjectType::Building, None);
         }
 
+        Self::card_frame().show(ui, |ui| {
+            ui.label(RichText::new("Object Tree feature ideation (10)").strong());
+            ui.small("Top 4 focus items for data-centric object management.");
+            for line in [
+                "✅ Building delete with subtree cleanup (TOP 4)",
+                "✅ Template-linked equipment sync w/ per-object overrides (TOP 4)",
+                "✅ Icon-forward hierarchy (controllers, points, equipment) (TOP 4)",
+                "✅ Exportable object tree contracts (TOP 4)",
+                "• Multi-select + bulk edit",
+                "• Change history / audit trail",
+                "• Relationship graph inspector",
+                "• Tree filtering by status",
+                "• Object validation badges",
+                "• Cross-reference dependency panel",
+            ] {
+                ui.label(line);
+            }
+        });
+
         egui::ScrollArea::both().show(ui, |ui| {
             let query = self.object_search_query.trim();
             let roots = self.filtered_root_ids(query);
@@ -2628,7 +2888,7 @@ impl AutoMateApp {
         ui.horizontal(|ui| {
             if has_children {
                 let collapsed = self.collapsed_tree_nodes.contains(&id);
-                if ui.small_button(if collapsed { "▸" } else { "▾" }).clicked() {
+                if ui.small_button(if collapsed { "+" } else { "-" }).clicked() {
                     if collapsed {
                         self.collapsed_tree_nodes.remove(&id);
                     } else {
@@ -3179,8 +3439,52 @@ impl AutoMateApp {
                                 .text("Risk %"),
                         );
                     });
+                    ui.separator();
+                    ui.label(RichText::new("Top 3 enabled estimator features").strong());
+                    ui.columns(3, |columns| {
+                        columns[0].add(
+                            egui::Slider::new(
+                                &mut self.project.estimator.schedule_compression_percent,
+                                0.0..=20.0,
+                            )
+                            .text("Schedule compression %"),
+                        );
+                        columns[1].add(
+                            egui::Slider::new(
+                                &mut self.project.estimator.travel_coordination_percent,
+                                0.0..=15.0,
+                            )
+                            .text("Travel/coordination %"),
+                        );
+                        columns[2].add(
+                            egui::Slider::new(
+                                &mut self.project.estimator.system_novelty_percent,
+                                0.0..=18.0,
+                            )
+                            .text("System novelty %"),
+                        );
+                    });
                 });
         }
+
+        Self::card_frame().show(ui, |ui| {
+            ui.label(RichText::new("Estimator feature ideation (10)").strong());
+            ui.small("Selected top 3 are active in calculations.");
+            for line in [
+                "✅ Schedule compression multiplier (TOP 3)",
+                "✅ Travel & coordination overhead (TOP 3)",
+                "✅ System novelty/new-tech risk (TOP 3)",
+                "• Crew ramp-up learning curve",
+                "• Controls network complexity score",
+                "• Legacy documentation quality factor",
+                "• Remote commissioning fraction",
+                "• Sequence volatility allowance",
+                "• Cross-trade dependency multiplier",
+                "• Site logistics friction factor",
+            ] {
+                ui.label(line);
+            }
+        });
 
         ui.columns(2, |columns| {
             Self::card_frame().show(&mut columns[0], |ui| {
@@ -3327,6 +3631,25 @@ impl AutoMateApp {
             });
         }
 
+        Self::card_frame().show(ui, |ui| {
+            ui.label(RichText::new("Template Tool feature ideation (10)").strong());
+            ui.small("Top 4 focus items for a data-centric workflow.");
+            for line in [
+                "✅ Template versioning + pin on equipment (TOP 4)",
+                "✅ Import/export template packs (TOP 4)",
+                "✅ Required-property validation rules (TOP 4)",
+                "✅ Cross-template diff viewer (TOP 4)",
+                "• Template approval workflow",
+                "• Template lifecycle status",
+                "• Point naming convention presets",
+                "• Vendor metadata blocks",
+                "• Region/code variants",
+                "• Dependent sub-template composition",
+            ] {
+                ui.label(line);
+            }
+        });
+
         egui::ScrollArea::both().show(ui, |ui| {
             let mut remove_template = None;
             for (idx, template) in self.user_templates.iter_mut().enumerate() {
@@ -3465,6 +3788,7 @@ impl AutoMateApp {
                             self.overlay_pdf_bytes = Some(bytes);
                             self.overlay_texture = None;
                             self.overlay_pdf_page = 0;
+                            self.overlay_page_jump_input = "1".to_string();
                             self.overlay_pdf_page_count = 0;
                             self.project.overlay_pages.clear();
                             self.overlay_undo_stack.clear();
@@ -3483,6 +3807,7 @@ impl AutoMateApp {
             );
             if ui.button("◀ Prev Page").clicked() && self.overlay_pdf_page > 0 {
                 self.overlay_pdf_page -= 1;
+                self.overlay_page_jump_input = format!("{}", self.overlay_pdf_page + 1);
                 self.overlay_texture = None;
             }
             ui.label(format!(
@@ -3494,7 +3819,22 @@ impl AutoMateApp {
                 && self.overlay_pdf_page + 1 < self.overlay_pdf_page_count
             {
                 self.overlay_pdf_page += 1;
+                self.overlay_page_jump_input = format!("{}", self.overlay_pdf_page + 1);
                 self.overlay_texture = None;
+            }
+            ui.separator();
+            ui.label("Jump");
+            ui.add_sized(
+                [46.0, 20.0],
+                egui::TextEdit::singleline(&mut self.overlay_page_jump_input),
+            );
+            if ui.button("Go").clicked() {
+                if let Ok(page_num) = self.overlay_page_jump_input.trim().parse::<usize>() {
+                    if page_num > 0 && page_num <= self.overlay_pdf_page_count.max(1) {
+                        self.overlay_pdf_page = page_num - 1;
+                        self.overlay_texture = None;
+                    }
+                }
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -3529,6 +3869,10 @@ impl AutoMateApp {
             if ui.button("⮫").on_hover_text("Redo").clicked() {
                 self.overlay_redo();
             }
+            ui.separator();
+            ui.checkbox(&mut self.overlay_snap_to_grid, "Snap grid");
+            ui.checkbox(&mut self.overlay_snap_to_nodes, "Snap objects");
+            ui.checkbox(&mut self.overlay_wire_orthogonal, "Ortho wire");
         });
         ui.label(
             RichText::new(
@@ -3536,6 +3880,25 @@ impl AutoMateApp {
             )
             .color(Color32::from_gray(180)),
         );
+
+        Self::card_frame().show(ui, |ui| {
+            ui.label(RichText::new("Overlay feature ideation (10)").strong());
+            ui.small("Top 4 focus items for tree-linked takeoff operations.");
+            for line in [
+                "✅ Click overlay token to bind/select tree object properties (TOP 4)",
+                "✅ Move/scale/rotate linked overlay objects (TOP 4)",
+                "✅ Snap + orthogonal wire routing improvements (TOP 4)",
+                "✅ Page jump + minimap navigation (TOP 4)",
+                "• Layer visibility toggles",
+                "• Segment labels and wire metadata",
+                "• Route length and path analytics",
+                "• Multi-object alignment tools",
+                "• Constraint-based object locking",
+                "• Conflict detection with drawing annotations",
+            ] {
+                ui.label(line);
+            }
+        });
 
         ui.horizontal(|ui| {
             if ui.button("➖").clicked() {
@@ -3655,7 +4018,7 @@ impl AutoMateApp {
 
                     let label_rect = egui::Rect::from_center_size(
                         center,
-                        egui::vec2(138.0, 28.0) * self.overlay_zoom.min(1.5),
+                        egui::vec2(138.0, 28.0) * self.overlay_zoom.min(1.5) * node.scale.max(0.35),
                     );
                     painter.rect_filled(label_rect, 6.0, status_color);
                     painter.rect_stroke(
@@ -3669,6 +4032,13 @@ impl AutoMateApp {
                         obj_name,
                         FontId::new(15.0 * self.overlay_zoom.min(1.4), FontFamily::Proportional),
                         Color32::WHITE,
+                    );
+                    let theta = node.rotation_deg.to_radians();
+                    let dir =
+                        egui::vec2(theta.cos() * 14.0, theta.sin() * 14.0) * self.overlay_zoom;
+                    painter.line_segment(
+                        [label_rect.center(), label_rect.center() + dir],
+                        egui::Stroke::new(1.5, Color32::WHITE),
                     );
                 }
 
@@ -3691,10 +4061,37 @@ impl AutoMateApp {
                 if resp.hovered() {
                     if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
                         if ui.input(|i| i.pointer.any_released()) {
-                            let local = [
+                            let mut local = [
                                 (pointer.x - draw_rect.left()) / self.overlay_zoom,
                                 (pointer.y - draw_rect.top()) / self.overlay_zoom,
                             ];
+                            local = self.overlay_snap_position(local);
+
+                            let clicked_node = self.current_overlay_page().and_then(|page| {
+                                page.nodes
+                                    .iter()
+                                    .find(|node| {
+                                        let center = egui::pos2(
+                                            draw_rect.left() + node.x * self.overlay_zoom,
+                                            draw_rect.top() + node.y * self.overlay_zoom,
+                                        );
+                                        center.distance(pointer) < 40.0
+                                    })
+                                    .map(|node| node.id)
+                            });
+
+                            if let Some(node_id) = clicked_node {
+                                self.selected_overlay_node = Some(node_id);
+                                if let Some(page) = self.current_overlay_page() {
+                                    if let Some(node) = page.nodes.iter().find(|n| n.id == node_id)
+                                    {
+                                        self.selected_object = Some(node.object_id);
+                                        self.status =
+                                            "Overlay object linked to tree selection".to_string();
+                                    }
+                                }
+                            }
+
                             if let Some(object_id) = self.dragging_tree_object.take() {
                                 self.place_overlay_node(object_id, local);
                             } else if resp.clicked() {
@@ -3702,12 +4099,28 @@ impl AutoMateApp {
                                     OverlayTool::Route => {
                                         if let Some(start) = self.active_line_start.take() {
                                             self.push_overlay_history();
-                                            self.current_overlay_page_mut().lines.push(
-                                                OverlayLine {
-                                                    from: start,
-                                                    to: local,
-                                                },
-                                            );
+                                            if self.overlay_wire_orthogonal {
+                                                let elbow = [local[0], start[1]];
+                                                self.current_overlay_page_mut().lines.push(
+                                                    OverlayLine {
+                                                        from: start,
+                                                        to: elbow,
+                                                    },
+                                                );
+                                                self.current_overlay_page_mut().lines.push(
+                                                    OverlayLine {
+                                                        from: elbow,
+                                                        to: local,
+                                                    },
+                                                );
+                                            } else {
+                                                self.current_overlay_page_mut().lines.push(
+                                                    OverlayLine {
+                                                        from: start,
+                                                        to: local,
+                                                    },
+                                                );
+                                            }
                                         } else {
                                             self.active_line_start = Some(local);
                                         }
@@ -3725,10 +4138,107 @@ impl AutoMateApp {
                         }
                     }
                 }
+
+                if resp.drag_started() {
+                    if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
+                        let hit = self.current_overlay_page().and_then(|page| {
+                            page.nodes
+                                .iter()
+                                .find(|node| {
+                                    let center = egui::pos2(
+                                        draw_rect.left() + node.x * self.overlay_zoom,
+                                        draw_rect.top() + node.y * self.overlay_zoom,
+                                    );
+                                    center.distance(pointer) < 40.0
+                                })
+                                .map(|node| (node.id, node.x, node.y))
+                        });
+                        if let Some((node_id, node_x, node_y)) = hit {
+                            self.dragging_overlay_node = Some(node_id);
+                            self.overlay_drag_offset = egui::vec2(
+                                pointer.x - (draw_rect.left() + node_x * self.overlay_zoom),
+                                pointer.y - (draw_rect.top() + node_y * self.overlay_zoom),
+                            );
+                        }
+                    }
+                }
+
+                if resp.dragged() {
+                    if let (Some(node_id), Some(pointer)) = (
+                        self.dragging_overlay_node,
+                        ui.input(|i| i.pointer.hover_pos()),
+                    ) {
+                        let mut local = [
+                            (pointer.x - self.overlay_drag_offset.x - draw_rect.left())
+                                / self.overlay_zoom,
+                            (pointer.y - self.overlay_drag_offset.y - draw_rect.top())
+                                / self.overlay_zoom,
+                        ];
+                        local = self.overlay_snap_position(local);
+                        if let Some(page) =
+                            self.project.overlay_pages.get_mut(&self.overlay_pdf_page)
+                        {
+                            if let Some(node) = page.nodes.iter_mut().find(|n| n.id == node_id) {
+                                node.x = local[0];
+                                node.y = local[1];
+                            }
+                        }
+                    }
+                }
             });
 
         if ui.input(|i| i.pointer.any_released()) {
             self.dragging_tree_object = None;
+            self.dragging_overlay_node = None;
+        }
+
+        if let Some(node_id) = self.selected_overlay_node {
+            if let Some(page) = self.project.overlay_pages.get_mut(&self.overlay_pdf_page) {
+                if let Some(node) = page.nodes.iter_mut().find(|n| n.id == node_id) {
+                    Self::card_frame().show(ui, |ui| {
+                        ui.label(RichText::new("Selected Overlay Object").strong());
+                        ui.add(
+                            egui::Slider::new(&mut node.scale, 0.35..=2.2)
+                                .text("Scale")
+                                .clamp_to_range(true),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut node.rotation_deg, -180.0..=180.0)
+                                .text("Rotation (deg)"),
+                        );
+                    });
+                }
+            }
+        }
+
+        if let Some(page) = self.current_overlay_page() {
+            let base_size = self
+                .overlay_texture
+                .as_ref()
+                .map(|t| t.size_vec2())
+                .unwrap_or_else(|| egui::vec2(1200.0, 1600.0));
+            let minimap_size = egui::vec2(180.0, 120.0);
+            let rect = ui.max_rect();
+            let mini_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - minimap_size.x - 8.0, rect.top() + 8.0),
+                minimap_size,
+            );
+            let painter = ui.painter();
+            painter.rect_filled(
+                mini_rect,
+                6.0,
+                Color32::from_rgba_unmultiplied(10, 14, 22, 200),
+            );
+            painter.rect_stroke(mini_rect, 6.0, egui::Stroke::new(1.0, self.accent()));
+            for node in &page.nodes {
+                let x = mini_rect.left() + (node.x / base_size.x.max(1.0)) * mini_rect.width();
+                let y = mini_rect.top() + (node.y / base_size.y.max(1.0)) * mini_rect.height();
+                painter.circle_filled(
+                    egui::pos2(x, y),
+                    2.8,
+                    self.object_overlay_color(node.object_id),
+                );
+            }
         }
 
         if let Some((kind, pos)) = self.pending_overlay_drop {
@@ -3762,6 +4272,8 @@ impl AutoMateApp {
                                             object_id: id,
                                             x: pos[0],
                                             y: pos[1],
+                                            scale: 1.0,
+                                            rotation_deg: 0.0,
                                         });
                                         self.project.next_id += 1;
                                         self.pending_overlay_drop = None;
