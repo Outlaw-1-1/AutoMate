@@ -4,6 +4,8 @@ A Rust desktop prototype for data-driven BAS estimating and submittal workflows.
 
 ## Features
 
+- Iteration planning document with recommended scope and acceptance criteria (`docs/NEXT_ITERATION_RECOMMENDED.md`).
+
 - Breathing full-screen gradient background (gray ↔ accent color) with configurable accent theme.
 - Professional glass-elevated pane system with consistent padding and shadows.
 - Custom title bar with drag, minimize, restore, and close controls.
