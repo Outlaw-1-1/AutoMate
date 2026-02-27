@@ -476,8 +476,14 @@ fn default_project_uuid() -> Uuid {
     Uuid::new_v4()
 }
 
+fn default_schema_version() -> u32 {
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct Project {
+    #[serde(default = "default_schema_version")]
+    schema_version: u32,
     name: String,
     notes: String,
     proposal: ProposalData,
@@ -539,6 +545,7 @@ impl Default for Project {
         };
 
         Self {
+            schema_version: default_schema_version(),
             name: "New BAS Project".to_string(),
             notes: "Capture assumptions, scope notes, and exclusions here.".to_string(),
             proposal: ProposalData::default(),
@@ -664,6 +671,52 @@ struct AutoMateApp {
 }
 
 impl AutoMateApp {
+    fn validate_export_readiness(&self) -> Result<(), String> {
+        let mut missing = Vec::new();
+
+        if !self
+            .project
+            .export_settings
+            .project_settings_and_proposal_inputs
+        {
+            missing.push("Project description and core information");
+        }
+        if !self.project.export_settings.hours_breakout {
+            missing.push("Hours breakdown");
+        }
+        if !self.project.export_settings.bill_of_materials {
+            missing.push("Bill of materials");
+        }
+        if self
+            .project
+            .objects
+            .iter()
+            .all(|o| o.object_type != ObjectType::Equipment)
+        {
+            missing.push("All equipment in scope");
+        }
+        if self.project.overlay_pdf.is_none() {
+            missing.push("Construction drawings with AutoMate overlays");
+        }
+
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Export blocked. Complete required package sections: {}",
+                missing.join(", ")
+            ))
+        }
+    }
+
+    fn write_export_fallback_bundle(&mut self) -> Option<PathBuf> {
+        let path = self.autosave_fallback_path()?;
+        match self.save_project_to_path(&path) {
+            Ok(_) => Some(path),
+            Err(_) => None,
+        }
+    }
+
     fn new(cc: &CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         Self {
@@ -2030,6 +2083,11 @@ impl AutoMateApp {
     }
 
     fn export_project_pdf(&mut self) {
+        if let Err(message) = self.validate_export_readiness() {
+            self.status = message;
+            return;
+        }
+
         let Some(path) = FileDialog::new()
             .add_filter("PDF", &["pdf"])
             .set_file_name("project-export.pdf")
@@ -2048,7 +2106,11 @@ impl AutoMateApp {
         let font = match doc.add_builtin_font(BuiltinFont::Helvetica) {
             Ok(font) => font,
             Err(err) => {
-                self.status = format!("PDF export failed: {err}");
+                let fallback_message = self
+                    .write_export_fallback_bundle()
+                    .map(|path| format!(" Fallback bundle saved to {}.", path.display()))
+                    .unwrap_or_default();
+                self.status = format!("PDF export failed: {err}.{fallback_message}");
                 return;
             }
         };
@@ -2207,7 +2269,13 @@ impl AutoMateApp {
 
         match result {
             Ok(_) => self.status = format!("Exported PDF {}", path.display()),
-            Err(err) => self.status = format!("PDF export failed: {err}"),
+            Err(err) => {
+                let fallback_message = self
+                    .write_export_fallback_bundle()
+                    .map(|path| format!(" Fallback bundle saved to {}.", path.display()))
+                    .unwrap_or_default();
+                self.status = format!("PDF export failed: {err}.{fallback_message}")
+            }
         }
     }
 
@@ -2228,8 +2296,9 @@ impl AutoMateApp {
             .map(|(kind, count)| format!("{} {}", kind.label(), count))
             .join(", ");
         let body = format!(
-            "# Proposal Summary\n\nProject: {}\n\nProject UUID: {}\nExported: {}\n\n## Metadata\n- Client: {}\n- Location: {}\n- Proposal #: {}\n- Revision: {}\n- Bid Date: {}\n- Prepared By: {}\n\n## Scope\n{}\n\n## Assumptions\n{}\n\n## Exclusions\n{}\n\n## System Mix\n- {}\n\n## Estimated Hours\n- Engineering: {:.1} h\n- Graphics/Submittals: {:.1} h\n- Commissioning: {:.1} h\n- Custom Lines: {:.1} h\n- Overhead / Risk: {:.1} h\n- **Total: {:.1} h**\n",
+            "# Proposal Summary\n\nProject: {}\n\nSchema Version: {}\nProject UUID: {}\nExported: {}\n\n## Metadata\n- Client: {}\n- Location: {}\n- Proposal #: {}\n- Revision: {}\n- Bid Date: {}\n- Prepared By: {}\n\n## Scope\n{}\n\n## Assumptions\n{}\n\n## Exclusions\n{}\n\n## System Mix\n- {}\n\n## Estimated Hours\n- Engineering: {:.1} h\n- Graphics/Submittals: {:.1} h\n- Commissioning: {:.1} h\n- Custom Lines: {:.1} h\n- Overhead / Risk: {:.1} h\n- **Total: {:.1} h**\n",
             self.project.name,
+            self.project.schema_version,
             self.project.project_uuid,
             exported_at,
             p.client_name,
