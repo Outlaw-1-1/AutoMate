@@ -671,69 +671,40 @@ struct AutoMateApp {
 }
 
 impl AutoMateApp {
-    fn ux_overhaul_questions() -> [(&'static str, &'static str); 15] {
+    fn export_readiness_rows(&self) -> [(&'static str, bool); 5] {
         [
             (
-                "Is navigation obvious for first-time users?",
-                "Recommended: Keep one primary workspace with clear left navigation and contextual right properties.",
+                "Project description and core information",
+                self.project
+                    .export_settings
+                    .project_settings_and_proposal_inputs,
             ),
             (
-                "Can users immediately see project health and readiness?",
-                "Recommended: Surface export-readiness checks and key metrics in the overview panel.",
+                "Hours breakdown",
+                self.project.export_settings.hours_breakout,
             ),
             (
-                "Are high-value actions available in one click?",
-                "Recommended: Keep save, load, export, and health checks in the top toolbar.",
+                "Bill of materials",
+                self.project.export_settings.bill_of_materials,
             ),
             (
-                "Is visual hierarchy strong enough for dense engineering data?",
-                "Recommended: Use card sections, stronger headings, and whitespace between groups.",
+                "All equipment in scope",
+                self.project
+                    .objects
+                    .iter()
+                    .any(|o| o.object_type == ObjectType::Equipment),
             ),
             (
-                "Can users recover quickly from mistakes?",
-                "Recommended: Preserve undo/redo for overlays and autosave frequently.",
-            ),
-            (
-                "Are defaults optimized for delivery speed?",
-                "Recommended: Clamp estimator factors and apply production-safe settings by default.",
-            ),
-            (
-                "Do export options align with the five required package sections?",
-                "Recommended: Enable all proposal package sections before official export.",
-            ),
-            (
-                "Is admin handoff straightforward after engineering finishes?",
-                "Recommended: Keep official PDF export as a single visible action with readiness validation.",
-            ),
-            (
-                "Can users orient quickly in large projects?",
-                "Recommended: Show object counts and searchable tree filtering in the side panel.",
-            ),
-            (
-                "Does the UI support long sessions without fatigue?",
-                "Recommended: Use balanced dark contrast, consistent spacing, and optional UI scale control.",
-            ),
-            (
-                "Are drawing overlay tools discoverable and mode-driven?",
-                "Recommended: Keep explicit route/place modes with visible state and snapping controls.",
-            ),
-            (
-                "Is status communication immediate and meaningful?",
-                "Recommended: Keep persistent status bar feedback for every major operation.",
-            ),
-            (
-                "Are proposal inputs complete enough for professional output?",
-                "Recommended: Structure stakeholder, commercial, and scope fields into dedicated cards.",
-            ),
-            (
-                "Does the interface scale to different operator preferences?",
-                "Recommended: Offer standard UI scales and enforce safe autosave intervals.",
-            ),
-            (
-                "Can the team enforce a repeatable next-iteration baseline quickly?",
-                "Recommended: Provide an 'Apply next iteration UX baseline' action that sets all recommended defaults.",
+                "Construction drawings with AutoMate overlays",
+                self.project.overlay_pdf.is_some(),
             ),
         ]
+    }
+
+    fn export_readiness_score(&self) -> (usize, usize) {
+        let rows = self.export_readiness_rows();
+        let complete = rows.iter().filter(|(_, ok)| *ok).count();
+        (complete, rows.len())
     }
 
     fn validate_export_readiness(&self) -> Result<(), String> {
@@ -993,11 +964,17 @@ impl AutoMateApp {
         self.project
             .export_settings
             .project_settings_and_proposal_inputs = true;
+        self.project.export_settings.included_equipment_ids = self
+            .project
+            .objects
+            .iter()
+            .filter(|o| o.object_type == ObjectType::Equipment)
+            .map(|o| o.id)
+            .collect();
         self.project.settings.show_overlay_grid = true;
         self.left_sidebar_collapsed = false;
         self.current_view = ToolView::ProjectSettings;
-        self.status =
-            "Applied next iteration UX baseline (15/15 recommendations enabled)".to_string();
+        self.status = "Applied next iteration UX baseline to active workflows".to_string();
     }
 
     fn accent(&self) -> Color32 {
@@ -1788,6 +1765,10 @@ impl AutoMateApp {
                 ui.monospace(format!("Equipment: {equipment}"));
                 ui.separator();
                 ui.monospace(format!("Points: {points}"));
+
+                let (complete, total) = self.export_readiness_score();
+                ui.separator();
+                ui.monospace(format!("Export Readiness: {complete}/{total}"));
             });
         });
     }
@@ -2858,10 +2839,41 @@ impl AutoMateApp {
             ui.label(format!("Total Objects: {}", self.project.objects.len()));
             ui.small(format!("Project ID: {}", self.project.project_uuid));
 
+            let (complete, total) = self.export_readiness_score();
             ui.separator();
-            if ui.button("Apply Recommended Defaults").clicked() {
-                self.apply_recommended_settings();
-                self.status = "Applied recommended defaults".to_string();
+            ui.label(
+                RichText::new(format!("Proposal package readiness: {complete}/{total}"))
+                    .strong(),
+            );
+            for (label, ok) in self.export_readiness_rows() {
+                let prefix = if ok { "✅" } else { "⚠" };
+                ui.label(format!("{prefix} {label}"));
+            }
+
+            ui.separator();
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Apply Recommended Defaults").clicked() {
+                    self.apply_recommended_settings();
+                    self.status = "Applied recommended defaults".to_string();
+                }
+                if ui.button("Apply Next Iteration UX Baseline").clicked() {
+                    self.apply_next_iteration_ux_baseline();
+                }
+                if ui.button("Run Export Readiness Check").clicked() {
+                    self.status = match self.validate_export_readiness() {
+                        Ok(_) => "Export readiness check passed".to_string(),
+                        Err(message) => message,
+                    };
+                }
+                if ui.button("Export Official PDF").clicked() {
+                    self.export_project_pdf();
+                }
+            });
+
+            if complete < total {
+                ui.small(
+                    "Tip: complete all readiness items above before official export for admin handoff.",
+                );
             }
         });
     }
