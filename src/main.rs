@@ -994,9 +994,6 @@ impl AutoMateApp {
             .export_settings
             .project_settings_and_proposal_inputs = true;
         self.project.settings.show_overlay_grid = true;
-        self.overlay_snap_to_grid = true;
-        self.overlay_snap_to_nodes = true;
-        self.overlay_wire_orthogonal = true;
         self.left_sidebar_collapsed = false;
         self.current_view = ToolView::ProjectSettings;
         self.status =
