@@ -671,6 +671,14 @@ struct AutoMateApp {
 }
 
 impl AutoMateApp {
+    // Compatibility shim: some branch variants still reference this helper in old UI blocks.
+    // Keep it defined so those call sites compile, while UX recommendations are now applied
+    // through active workflow logic (readiness + baseline actions) rather than checklist text.
+    #[allow(dead_code)]
+    fn ux_overhaul_questions() -> [(&'static str, &'static str); 0] {
+        []
+    }
+
     fn export_readiness_rows(&self) -> [(&'static str, bool); 5] {
         [
             (
