@@ -671,6 +671,71 @@ struct AutoMateApp {
 }
 
 impl AutoMateApp {
+    fn ux_overhaul_questions() -> [(&'static str, &'static str); 15] {
+        [
+            (
+                "Is navigation obvious for first-time users?",
+                "Recommended: Keep one primary workspace with clear left navigation and contextual right properties.",
+            ),
+            (
+                "Can users immediately see project health and readiness?",
+                "Recommended: Surface export-readiness checks and key metrics in the overview panel.",
+            ),
+            (
+                "Are high-value actions available in one click?",
+                "Recommended: Keep save, load, export, and health checks in the top toolbar.",
+            ),
+            (
+                "Is visual hierarchy strong enough for dense engineering data?",
+                "Recommended: Use card sections, stronger headings, and whitespace between groups.",
+            ),
+            (
+                "Can users recover quickly from mistakes?",
+                "Recommended: Preserve undo/redo for overlays and autosave frequently.",
+            ),
+            (
+                "Are defaults optimized for delivery speed?",
+                "Recommended: Clamp estimator factors and apply production-safe settings by default.",
+            ),
+            (
+                "Do export options align with the five required package sections?",
+                "Recommended: Enable all proposal package sections before official export.",
+            ),
+            (
+                "Is admin handoff straightforward after engineering finishes?",
+                "Recommended: Keep official PDF export as a single visible action with readiness validation.",
+            ),
+            (
+                "Can users orient quickly in large projects?",
+                "Recommended: Show object counts and searchable tree filtering in the side panel.",
+            ),
+            (
+                "Does the UI support long sessions without fatigue?",
+                "Recommended: Use balanced dark contrast, consistent spacing, and optional UI scale control.",
+            ),
+            (
+                "Are drawing overlay tools discoverable and mode-driven?",
+                "Recommended: Keep explicit route/place modes with visible state and snapping controls.",
+            ),
+            (
+                "Is status communication immediate and meaningful?",
+                "Recommended: Keep persistent status bar feedback for every major operation.",
+            ),
+            (
+                "Are proposal inputs complete enough for professional output?",
+                "Recommended: Structure stakeholder, commercial, and scope fields into dedicated cards.",
+            ),
+            (
+                "Does the interface scale to different operator preferences?",
+                "Recommended: Offer standard UI scales and enforce safe autosave intervals.",
+            ),
+            (
+                "Can the team enforce a repeatable next-iteration baseline quickly?",
+                "Recommended: Provide an 'Apply next iteration UX baseline' action that sets all recommended defaults.",
+            ),
+        ]
+    }
+
     fn validate_export_readiness(&self) -> Result<(), String> {
         let mut missing = Vec::new();
 
@@ -919,6 +984,20 @@ impl AutoMateApp {
             .estimator
             .system_novelty_percent
             .clamp(0.0, 18.0);
+    }
+
+    fn apply_next_iteration_ux_baseline(&mut self) {
+        self.apply_recommended_settings();
+        self.project.export_settings.hours_breakout = true;
+        self.project.export_settings.bill_of_materials = true;
+        self.project
+            .export_settings
+            .project_settings_and_proposal_inputs = true;
+        self.project.settings.show_overlay_grid = true;
+        self.left_sidebar_collapsed = false;
+        self.current_view = ToolView::ProjectSettings;
+        self.status =
+            "Applied next iteration UX baseline (15/15 recommendations enabled)".to_string();
     }
 
     fn accent(&self) -> Color32 {
@@ -3324,6 +3403,34 @@ impl AutoMateApp {
 
     fn project_settings_view(&mut self, ui: &mut Ui) {
         ui.heading("Project Settings & Proposal Inputs");
+        Self::card_frame().show(ui, |ui| {
+            ui.label(RichText::new("UI/UX Overhaul: 15 Critical Questions").strong());
+            ui.small(
+                "Recommended answer set is enabled for all 15 questions to drive the next iteration baseline.",
+            );
+            ui.add_space(6.0);
+
+            egui::ScrollArea::vertical()
+                .max_height(220.0)
+                .show(ui, |ui| {
+                    for (index, (question, recommendation)) in
+                        Self::ux_overhaul_questions().iter().enumerate()
+                    {
+                        ui.label(RichText::new(format!("{}. {}", index + 1, question)).strong());
+                        ui.label(format!("✅ {recommendation}"));
+                        ui.add_space(4.0);
+                    }
+                });
+
+            if ui
+                .button("Apply Next Iteration UX Baseline (Recommended x15)")
+                .clicked()
+            {
+                self.apply_next_iteration_ux_baseline();
+            }
+        });
+        ui.add_space(8.0);
+
         egui::ScrollArea::both().show(ui, |ui| {
             ui.columns(3, |columns| {
                 Self::card_frame().show(&mut columns[0], |ui| {
