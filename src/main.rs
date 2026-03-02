@@ -3415,6 +3415,34 @@ impl AutoMateApp {
 
     fn project_settings_view(&mut self, ui: &mut Ui) {
         ui.heading("Project Settings & Proposal Inputs");
+        Self::card_frame().show(ui, |ui| {
+            ui.label(RichText::new("UI/UX Overhaul: 15 Critical Questions").strong());
+            ui.small(
+                "Recommended answer set is enabled for all 15 questions to drive the next iteration baseline.",
+            );
+            ui.add_space(6.0);
+
+            egui::ScrollArea::vertical()
+                .max_height(220.0)
+                .show(ui, |ui| {
+                    for (index, (question, recommendation)) in
+                        Self::ux_overhaul_questions().iter().enumerate()
+                    {
+                        ui.label(RichText::new(format!("{}. {}", index + 1, question)).strong());
+                        ui.label(format!("✅ {recommendation}"));
+                        ui.add_space(4.0);
+                    }
+                });
+
+            if ui
+                .button("Apply Next Iteration UX Baseline (Recommended x15)")
+                .clicked()
+            {
+                self.apply_next_iteration_ux_baseline();
+            }
+        });
+        ui.add_space(8.0);
+
         egui::ScrollArea::both().show(ui, |ui| {
             ui.columns(3, |columns| {
                 Self::card_frame().show(&mut columns[0], |ui| {
