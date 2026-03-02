@@ -71,7 +71,6 @@ struct AutoMateApp {
 impl AutoMateApp {
     fn new(cc: &CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
-
         Self {
             tab: Tab::LineAudit,
             dark_mode: true,
