@@ -33,3 +33,7 @@ printpdf = "0.7"
 [[bin]]
 name = "automate-v2"
 path = "src/secondary.rs"
+
+[[bin]]
+name = "automate-v3"
+path = "src/three.rs"
