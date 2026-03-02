@@ -764,7 +764,6 @@ impl AutoMateApp {
 
     fn new(cc: &CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        egui_extras::install_image_loaders(&cc.egui_ctx);
         Self {
             project: Project::default(),
             current_view: ToolView::ProjectSettings,
