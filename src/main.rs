@@ -8,6 +8,7 @@ use eframe::{
     epaint::{Mesh, Shadow, Vertex},
     App, CreationContext, Frame, NativeOptions,
 };
+use egui_extras::{Size, StripBuilder};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use pdfium_render::prelude::*;
@@ -763,6 +764,7 @@ impl AutoMateApp {
 
     fn new(cc: &CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         Self {
             project: Project::default(),
             current_view: ToolView::ProjectSettings,
@@ -963,26 +965,6 @@ impl AutoMateApp {
             .estimator
             .system_novelty_percent
             .clamp(0.0, 18.0);
-    }
-
-    fn apply_next_iteration_ux_baseline(&mut self) {
-        self.apply_recommended_settings();
-        self.project.export_settings.hours_breakout = true;
-        self.project.export_settings.bill_of_materials = true;
-        self.project
-            .export_settings
-            .project_settings_and_proposal_inputs = true;
-        self.project.export_settings.included_equipment_ids = self
-            .project
-            .objects
-            .iter()
-            .filter(|o| o.object_type == ObjectType::Equipment)
-            .map(|o| o.id)
-            .collect();
-        self.project.settings.show_overlay_grid = true;
-        self.left_sidebar_collapsed = false;
-        self.current_view = ToolView::ProjectSettings;
-        self.status = "Applied next iteration UX baseline to active workflows".to_string();
     }
 
     fn accent(&self) -> Color32 {
@@ -2847,25 +2829,11 @@ impl AutoMateApp {
             ui.label(format!("Total Objects: {}", self.project.objects.len()));
             ui.small(format!("Project ID: {}", self.project.project_uuid));
 
-            let (complete, total) = self.export_readiness_score();
-            ui.separator();
-            ui.label(
-                RichText::new(format!("Proposal package readiness: {complete}/{total}"))
-                    .strong(),
-            );
-            for (label, ok) in self.export_readiness_rows() {
-                let prefix = if ok { "✅" } else { "⚠" };
-                ui.label(format!("{prefix} {label}"));
-            }
-
             ui.separator();
             ui.horizontal_wrapped(|ui| {
                 if ui.button("Apply Recommended Defaults").clicked() {
                     self.apply_recommended_settings();
                     self.status = "Applied recommended defaults".to_string();
-                }
-                if ui.button("Apply Next Iteration UX Baseline").clicked() {
-                    self.apply_next_iteration_ux_baseline();
                 }
                 if ui.button("Run Export Readiness Check").clicked() {
                     self.status = match self.validate_export_readiness() {
@@ -2877,12 +2845,6 @@ impl AutoMateApp {
                     self.export_project_pdf();
                 }
             });
-
-            if complete < total {
-                ui.small(
-                    "Tip: complete all readiness items above before official export for admin handoff.",
-                );
-            }
         });
     }
 
@@ -3423,115 +3385,114 @@ impl AutoMateApp {
 
     fn project_settings_view(&mut self, ui: &mut Ui) {
         ui.heading("Project Settings & Proposal Inputs");
-        Self::card_frame().show(ui, |ui| {
-            ui.label(RichText::new("UI/UX Overhaul: 15 Critical Questions").strong());
-            ui.small(
-                "Recommended answer set is enabled for all 15 questions to drive the next iteration baseline.",
-            );
-            ui.add_space(6.0);
-
-            egui::ScrollArea::vertical()
-                .max_height(220.0)
-                .show(ui, |ui| {
-                    for (index, (question, recommendation)) in
-                        Self::ux_overhaul_questions().iter().enumerate()
-                    {
-                        ui.label(RichText::new(format!("{}. {}", index + 1, question)).strong());
-                        ui.label(format!("✅ {recommendation}"));
-                        ui.add_space(4.0);
-                    }
-                });
-
-            if ui
-                .button("Apply Next Iteration UX Baseline (Recommended x15)")
-                .clicked()
-            {
-                self.apply_next_iteration_ux_baseline();
-            }
-        });
-        ui.add_space(8.0);
 
         egui::ScrollArea::both().show(ui, |ui| {
-            ui.columns(3, |columns| {
-                Self::card_frame().show(&mut columns[0], |ui| {
-                    ui.label(RichText::new("Project Core").strong());
-                    Self::labeled_singleline(ui, "Project Name", &mut self.project.name);
-                    Self::labeled_singleline(
-                        ui,
-                        "Project #",
-                        &mut self.project.proposal.project_number,
-                    );
-                    Self::labeled_singleline(
-                        ui,
-                        "Controller Prefix",
-                        &mut self.project.controller_prefix,
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.button("🖼 Upload Overview Image").clicked() {
-                            if let Some(path) = FileDialog::new()
-                                .add_filter("Images", &["png", "jpg", "jpeg", "bmp"])
-                                .pick_file()
-                            {
-                                match fs::read(&path) {
-                                    Ok(bytes) => {
-                                        self.project.overview_image =
-                                            Some(Self::sanitize_asset_name(&path));
-                                        self.overview_image_bytes = Some(bytes);
-                                        self.refresh_overview_texture(ui.ctx());
-                                        self.status = "Loaded overview image".to_string();
+            StripBuilder::new(ui)
+                .size(Size::relative(0.33))
+                .size(Size::relative(0.33))
+                .size(Size::remainder())
+                .horizontal(|mut strip| {
+                    strip.cell(|ui| {
+                        Self::card_frame().show(ui, |ui| {
+                            ui.label(RichText::new("Project Core").strong());
+                            Self::labeled_singleline(ui, "Project Name", &mut self.project.name);
+                            Self::labeled_singleline(
+                                ui,
+                                "Project #",
+                                &mut self.project.proposal.project_number,
+                            );
+                            Self::labeled_singleline(
+                                ui,
+                                "Controller Prefix",
+                                &mut self.project.controller_prefix,
+                            );
+                            ui.horizontal(|ui| {
+                                if ui.button("🖼 Upload Overview Image").clicked() {
+                                    if let Some(path) = FileDialog::new()
+                                        .add_filter("Images", &["png", "jpg", "jpeg", "bmp"])
+                                        .pick_file()
+                                    {
+                                        match fs::read(&path) {
+                                            Ok(bytes) => {
+                                                self.project.overview_image =
+                                                    Some(Self::sanitize_asset_name(&path));
+                                                self.overview_image_bytes = Some(bytes);
+                                                self.refresh_overview_texture(ui.ctx());
+                                                self.status = "Loaded overview image".to_string();
+                                            }
+                                            Err(err) => {
+                                                self.status = format!("Image load failed: {err}")
+                                            }
+                                        }
                                     }
-                                    Err(err) => self.status = format!("Image load failed: {err}"),
                                 }
-                            }
-                        }
-                        if let Some(path) = &self.project.overview_image {
-                            ui.small(path);
-                        }
+                                if let Some(path) = &self.project.overview_image {
+                                    ui.small(path);
+                                }
+                            });
+                            ui.label("Project Notes");
+                            ui.text_edit_multiline(&mut self.project.notes);
+                        });
                     });
-                    ui.label("Project Notes");
-                    ui.text_edit_multiline(&mut self.project.notes);
-                });
 
-                Self::card_frame().show(&mut columns[1], |ui| {
-                    ui.label(RichText::new("Stakeholders").strong());
-                    let p = &mut self.project.proposal;
-                    Self::labeled_singleline(ui, "Client", &mut p.client_name);
-                    Self::labeled_singleline(ui, "Owner", &mut p.owner);
-                    Self::labeled_singleline(ui, "Engineer", &mut p.engineer_of_record);
-                    Self::labeled_singleline(ui, "PM", &mut p.project_manager);
-                    Self::labeled_singleline(ui, "Estimator", &mut p.estimator);
-                });
+                    strip.cell(|ui| {
+                        Self::card_frame().show(ui, |ui| {
+                            ui.label(RichText::new("Stakeholders").strong());
+                            let p = &mut self.project.proposal;
+                            Self::labeled_singleline(ui, "Client", &mut p.client_name);
+                            Self::labeled_singleline(ui, "Owner", &mut p.owner);
+                            Self::labeled_singleline(ui, "Engineer", &mut p.engineer_of_record);
+                            Self::labeled_singleline(ui, "PM", &mut p.project_manager);
+                            Self::labeled_singleline(ui, "Estimator", &mut p.estimator);
+                        });
+                    });
 
-                Self::card_frame().show(&mut columns[2], |ui| {
-                    ui.label(RichText::new("Commercial & Schedule").strong());
-                    let p = &mut self.project.proposal;
-                    Self::labeled_singleline(ui, "Location", &mut p.project_location);
-                    Self::labeled_singleline(ui, "Proposal #", &mut p.proposal_number);
-                    Self::labeled_singleline(ui, "Revision", &mut p.revision);
-                    Self::labeled_singleline(ui, "Contract", &mut p.contract_type);
-                    Self::labeled_singleline(ui, "Design Stage", &mut p.design_stage);
-                    Self::labeled_singleline(ui, "Bid Date", &mut p.bid_date);
-                    Self::labeled_singleline(ui, "Start", &mut p.target_start_date);
-                    Self::labeled_singleline(ui, "Completion", &mut p.target_completion_date);
-                    Self::labeled_singleline(ui, "Prepared By", &mut p.prepared_by);
+                    strip.cell(|ui| {
+                        Self::card_frame().show(ui, |ui| {
+                            ui.label(RichText::new("Commercial & Schedule").strong());
+                            let p = &mut self.project.proposal;
+                            Self::labeled_singleline(ui, "Location", &mut p.project_location);
+                            Self::labeled_singleline(ui, "Proposal #", &mut p.proposal_number);
+                            Self::labeled_singleline(ui, "Revision", &mut p.revision);
+                            Self::labeled_singleline(ui, "Contract", &mut p.contract_type);
+                            Self::labeled_singleline(ui, "Design Stage", &mut p.design_stage);
+                            Self::labeled_singleline(ui, "Bid Date", &mut p.bid_date);
+                            Self::labeled_singleline(ui, "Start", &mut p.target_start_date);
+                            Self::labeled_singleline(
+                                ui,
+                                "Completion",
+                                &mut p.target_completion_date,
+                            );
+                            Self::labeled_singleline(ui, "Prepared By", &mut p.prepared_by);
+                        });
+                    });
                 });
-            });
 
             ui.add_space(8.0);
-            ui.columns(3, |columns| {
-                Self::card_frame().show(&mut columns[0], |ui| {
-                    ui.label(RichText::new("Scope Summary").strong());
-                    ui.text_edit_multiline(&mut self.project.proposal.scope_summary);
+            StripBuilder::new(ui)
+                .size(Size::relative(0.33))
+                .size(Size::relative(0.33))
+                .size(Size::remainder())
+                .horizontal(|mut strip| {
+                    strip.cell(|ui| {
+                        Self::card_frame().show(ui, |ui| {
+                            ui.label(RichText::new("Scope Summary").strong());
+                            ui.text_edit_multiline(&mut self.project.proposal.scope_summary);
+                        });
+                    });
+                    strip.cell(|ui| {
+                        Self::card_frame().show(ui, |ui| {
+                            ui.label(RichText::new("Assumptions").strong());
+                            ui.text_edit_multiline(&mut self.project.proposal.assumptions);
+                        });
+                    });
+                    strip.cell(|ui| {
+                        Self::card_frame().show(ui, |ui| {
+                            ui.label(RichText::new("Exclusions").strong());
+                            ui.text_edit_multiline(&mut self.project.proposal.exclusions);
+                        });
+                    });
                 });
-                Self::card_frame().show(&mut columns[1], |ui| {
-                    ui.label(RichText::new("Assumptions").strong());
-                    ui.text_edit_multiline(&mut self.project.proposal.assumptions);
-                });
-                Self::card_frame().show(&mut columns[2], |ui| {
-                    ui.label(RichText::new("Exclusions").strong());
-                    ui.text_edit_multiline(&mut self.project.proposal.exclusions);
-                });
-            });
 
             ui.add_space(8.0);
             Self::card_frame().show(ui, |ui| {
