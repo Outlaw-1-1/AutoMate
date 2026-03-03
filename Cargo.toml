@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 eframe = "0.28"
 egui = "0.28"
-egui_extras = { version = "0.28", features = ["image"] }
+egui_extras = { version = "0.28", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rfd = "0.14"
@@ -29,11 +29,4 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 once_cell = "1"
 csv = "1"
 printpdf = "0.7"
-
-[[bin]]
-name = "automate-v2"
-path = "src/secondary.rs"
-
-[[bin]]
-name = "automate-v3"
-path = "src/three.rs"
+petgraph = "0.6"
