@@ -72,6 +72,25 @@ cargo clean
 cargo build
 ```
 
+## Troubleshooting lockfile parse/checksum errors
+
+If Cargo fails with lockfile issues such as:
+
+- `failed to parse lock file`
+- `package ... is specified twice in the lockfile`
+- checksum mismatch errors for transitive crates
+
+try these steps in order:
+
+```bash
+python scripts/verify_lockfile.py
+rm -f Cargo.lock
+cargo generate-lockfile
+cargo check
+```
+
+If your environment uses a mirror/proxy, ensure it serves the same crate content as crates.io before regenerating the lockfile.
+
 ## Troubleshooting PDF overlay renderer
 
 If you see this status in the app:
