@@ -1,0 +1,20 @@
+name: lockfile-check
+
+on:
+  pull_request:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  validate-lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: Verify lockfile structure
+        run: python scripts/verify_lockfile.py
+      - name: Cargo metadata parse check
+        run: cargo metadata --format-version 1 --all-features > /dev/null
