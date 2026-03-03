@@ -16,12 +16,74 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    LineAudit,
-    Refactor,
-    Features,
-    Dependencies,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter)]
+enum ToolView {
+    ProjectSettings,
+    HoursEstimator,
+    DrawingsOverlay,
+    Templates,
+    FeatureControlCenter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayTool {
+    Route,
+    PlaceController,
+    PlaceEquipment,
+}
+
+impl OverlayTool {
+    fn label(self) -> &'static str {
+        match self {
+            OverlayTool::Route => "Wire tool",
+            OverlayTool::PlaceController => "Place controller",
+            OverlayTool::PlaceEquipment => "Place equipment",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppScreen {
+    Splash,
+    Login,
+    Studio,
+}
+
+const SPLASH_WINDOW_SIZE: f32 = 200.0;
+const LOGIN_WINDOW_DEFAULT_SIZE: [f32; 2] = [1200.0, 760.0];
+const LOGIN_WINDOW_MIN_SIZE: [f32; 2] = [960.0, 620.0];
+const STUDIO_WINDOW_SIZE: [f32; 2] = [1600.0, 920.0];
+
+#[derive(Debug, Error)]
+enum AppIoError {
+    #[error("Serialization failed: {0}")]
+    Serialization(#[from] serde_json::Error),
+    #[error("Filesystem error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Archive error: {0}")]
+    Zip(#[from] zip::result::ZipError),
+}
+
+impl ToolView {
+    fn label(self) -> &'static str {
+        match self {
+            ToolView::ProjectSettings => "Project Settings",
+            ToolView::HoursEstimator => "Hours Estimator",
+            ToolView::DrawingsOverlay => "Drawings Overlay",
+            ToolView::Templates => "Template Tool",
+            ToolView::FeatureControlCenter => "Feature Control Center",
+        }
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, EnumIter, JsonSchema,
+)]
+enum ObjectType {
+    Building,
+    Controller,
+    Equipment,
+    Point,
 }
 
 impl Tab {
@@ -244,113 +306,171 @@ impl AutoMateApp {
             }
         });
     }
+
+    fn feature_control_center_view(&mut self, ui: &mut Ui) {
+        ui.heading("Feature Control Center");
+        ui.label("Everything critical in AutoMate is still here. Use this panel as the one-stop operational checklist.");
+        ui.add_space(8.0);
+
+        let (ready_count, ready_total) = self.export_readiness_score();
+        let overlay_ready = self.project.overlay_pdf.is_some();
+        let template_ready = !self.user_templates.is_empty();
+        let has_equipment = self
+            .project
+            .objects
+            .iter()
+            .any(|o| o.object_type == ObjectType::Equipment);
+
+        Self::card_frame().show(ui, |ui| {
+            ui.label(RichText::new("Core Capabilities").strong());
+            ui.separator();
+            ui.label(format!("{} Project settings + proposal inputs", if !self.project.name.trim().is_empty() { "✅" } else { "⚠" }));
+            ui.label(format!("{} Hours estimator", if has_equipment { "✅" } else { "⚠" }));
+            ui.label(format!("{} Drawings overlay", if overlay_ready { "✅" } else { "⚠" }));
+            ui.label(format!("{} Template engine", if template_ready { "✅" } else { "⚠" }));
+            ui.label(format!("{} Export readiness ({ready_count}/{ready_total})", if ready_count == ready_total { "✅" } else { "⚠" }));
+        });
+
+        ui.add_space(10.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Go to Project Settings").clicked() {
+                self.current_view = ToolView::ProjectSettings;
+            }
+            if ui.button("Go to Hours Estimator").clicked() {
+                self.current_view = ToolView::HoursEstimator;
+            }
+            if ui.button("Go to Drawings Overlay").clicked() {
+                self.current_view = ToolView::DrawingsOverlay;
+            }
+            if ui.button("Go to Templates").clicked() {
+                self.current_view = ToolView::Templates;
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Run Health Check").clicked() {
+                self.status = match self.project_health_summary() {
+                    Ok(summary) => summary,
+                    Err(err) => format!("Health check failed: {err:#}"),
+                };
+            }
+            if ui.button("Validate Export Readiness").clicked() {
+                self.status = match self.validate_export_readiness() {
+                    Ok(_) => "Export package ready".to_string(),
+                    Err(err) => err,
+                };
+            }
+            if ui.button("Export Proposal Markdown").clicked() {
+                self.export_proposal_markdown();
+            }
+            if ui.button("Export Objects CSV").clicked() {
+                self.export_objects_csv();
+            }
+            if ui.button("Export Project Schema").clicked() {
+                self.export_project_schema();
+            }
+        });
+    }
 }
 
 impl App for AutoMateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        self.top_bar(ctx);
-        self.side_nav(ctx);
-        self.central_ui(ctx);
+        self.configure_viewport_for_screen(ctx);
+        self.handle_shortcuts(ctx);
+        if self.app_screen == AppScreen::Studio {
+            self.draw_studio_background(ctx);
+        }
+        ctx.set_pixels_per_point(self.project.settings.ui_scale);
+
+        let mut style = (*ctx.style()).clone();
+        style.spacing.item_spacing = egui::vec2(6.0, 6.0);
+        if self.app_screen != AppScreen::Studio {
+            style.visuals.window_fill = Color32::TRANSPARENT;
+            style.visuals.panel_fill = Color32::TRANSPARENT;
+        } else {
+            style.visuals.window_fill = Color32::from_rgb(18, 23, 34);
+            style.visuals.panel_fill = Color32::from_rgb(18, 23, 34);
+        }
+        style.visuals.widgets.noninteractive.bg_fill =
+            Color32::from_rgba_unmultiplied(255, 255, 255, 10);
+        style.visuals.override_text_color = Some(Color32::from_rgb(226, 233, 242));
+        style.visuals.extreme_bg_color = Color32::from_rgb(9, 12, 20);
+        style.visuals.widgets.inactive.bg_fill = Color32::from_rgba_unmultiplied(28, 36, 49, 230);
+        style.visuals.widgets.inactive.fg_stroke.color = Color32::from_rgb(225, 231, 240);
+        style.visuals.widgets.hovered.bg_fill = Color32::from_rgba_unmultiplied(
+            self.accent().r(),
+            self.accent().g(),
+            self.accent().b(),
+            100,
+        );
+        style.visuals.widgets.active.bg_fill = self.accent();
+        style.visuals.widgets.hovered.bg_fill = Color32::from_rgba_unmultiplied(
+            self.accent().r(),
+            self.accent().g(),
+            self.accent().b(),
+            120,
+        );
+        style.visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(
+            self.accent().r(),
+            self.accent().g(),
+            self.accent().b(),
+            128,
+        );
+        ctx.set_style(style);
+
+        match self.app_screen {
+            AppScreen::Splash => self.splash_screen(ctx),
+            AppScreen::Login => self.login_screen(ctx),
+            AppScreen::Studio => {
+                self.ensure_template_seeded();
+                self.autosave_project();
+                self.titlebar(ctx, _frame);
+                egui::TopBottomPanel::top("toolbar")
+                    .frame(Self::surface_panel())
+                    .show(ctx, |ui| self.toolbar_dropdowns(ui));
+
+                egui::TopBottomPanel::bottom("status")
+                    .frame(Self::surface_panel())
+                    .show(ctx, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(self.status.as_str());
+                            for (kind, count) in self.object_counts() {
+                                ui.label(format!("{} {}", kind.icon(), count));
+                            }
+                        });
+                    });
+
+                egui::SidePanel::left("objects")
+                    .resizable(true)
+                    .default_width(330.0)
+                    .frame(Self::surface_panel())
+                    .show(ctx, |ui| self.left_sidebar(ui));
+
+                egui::SidePanel::right("properties")
+                    .resizable(true)
+                    .default_width(360.0)
+                    .frame(Self::surface_panel())
+                    .show(ctx, |ui| self.right_properties(ui));
+
+                egui::CentralPanel::default()
+                    .frame(Self::surface_panel().inner_margin(egui::Margin::same(18.0)))
+                    .show(ctx, |ui| {
+                        ui.set_width(ui.available_width());
+                        self.workspace_header(ui);
+                        ui.separator();
+                        match self.current_view {
+                            ToolView::ProjectSettings => self.project_settings_view(ui),
+                            ToolView::HoursEstimator => self.hours_estimator_view(ui),
+                            ToolView::DrawingsOverlay => self.drawings_overlay_view(ui),
+                            ToolView::Templates => self.templates_view(ui),
+                            ToolView::FeatureControlCenter => self.feature_control_center_view(ui),
+                        }
+                    });
+
+                self.dialogs(ctx);
+            }
+        }
+        ctx.request_repaint();
     }
-}
-
-fn seed_reviews() -> Vec<LineReview> {
-    vec![
-        LineReview {
-            area: "Imports",
-            finding: "Large import surface mixes UI, PDF, IO, exports, diagnostics, and logging in one file.",
-            action: "Split into modules (`ui`, `domain`, `io`, `overlay`, `export`) and limit imports per module.",
-            keep: false,
-        },
-        LineReview {
-            area: "App bootstrap",
-            finding: "Native window setup is solid and provides product-quality defaults.",
-            action: "Keep native bootstrap but move window constants into `config.rs`.",
-            keep: true,
-        },
-        LineReview {
-            area: "Domain model",
-            finding: "Single file contains too many structs and optional fields, increasing schema drift risk.",
-            action: "Normalize model types and use enums/newtypes to reduce optional-field sprawl.",
-            keep: false,
-        },
-        LineReview {
-            area: "Estimator logic",
-            finding: "Core formulas are valuable but deeply coupled to UI state.",
-            action: "Extract estimator into pure functions with deterministic tests.",
-            keep: false,
-        },
-        LineReview {
-            area: "Overlay workflow",
-            finding: "Overlay capabilities are strong but stateful code makes undo/redo difficult to verify.",
-            action: "Introduce command history abstraction for canvas actions.",
-            keep: false,
-        },
-        LineReview {
-            area: "Persistence",
-            finding: "JSON + archive support is useful and should remain.",
-            action: "Keep persistence path but centralize all save/load errors under one error type.",
-            keep: true,
-        },
-    ]
-}
-
-fn seed_features() -> Vec<FeatureIdea> {
-    vec![
-        FeatureIdea { name: "Live proposal preview", value: "See export output before generating files", complexity: "Medium" },
-        FeatureIdea { name: "Command palette", value: "Keyboard-first navigation for power users", complexity: "Low" },
-        FeatureIdea { name: "Scenario compare mode", value: "A/B estimate alternatives in one view", complexity: "Medium" },
-        FeatureIdea { name: "Template versioning", value: "Track changes and roll back bad edits", complexity: "Medium" },
-        FeatureIdea { name: "Dependency health dashboard", value: "Visibility into build and security posture", complexity: "Low" },
-        FeatureIdea { name: "Overlay snap + guides", value: "Faster and cleaner routing alignment", complexity: "Medium" },
-        FeatureIdea { name: "Plugin-style exporters", value: "Custom outputs without touching core", complexity: "High" },
-        FeatureIdea { name: "Realtime collaboration hints", value: "Surface merge conflicts early", complexity: "High" },
-        FeatureIdea { name: "Audit trail timeline", value: "Who changed what and when", complexity: "Medium" },
-        FeatureIdea { name: "Smart point suggestions", value: "Generate point lists from equipment context", complexity: "High" },
-    ]
-}
-
-fn seed_dependencies() -> Vec<DependencyDecision> {
-    vec![
-        DependencyDecision {
-            crate_name: "eframe / egui",
-            decision: "Keep + upgrade cadence",
-            rationale: "Core UI stack; preserve and track minor releases for rendering and input improvements.",
-        },
-        DependencyDecision {
-            crate_name: "rayon",
-            decision: "Keep",
-            rationale: "Useful for parallel project diagnostics and estimator workloads on larger models.",
-        },
-        DependencyDecision {
-            crate_name: "printpdf",
-            decision: "Keep (re-evaluate with integration tests)",
-            rationale: "Needed for proposal package output until a full replacement benchmark exists.",
-        },
-        DependencyDecision {
-            crate_name: "pdfium-render",
-            decision: "Keep with lazy loading",
-            rationale: "Critical for drawing overlays; isolate initialization and report runtime status.",
-        },
-        DependencyDecision {
-            crate_name: "pollster",
-            decision: "Remove",
-            rationale: "No longer needed in the streamlined sync-first architecture.",
-        },
-        DependencyDecision {
-            crate_name: "once_cell",
-            decision: "Remove",
-            rationale: "Can be replaced by `const` and `std::sync::OnceLock` where static init is required.",
-        },
-        DependencyDecision {
-            crate_name: "petgraph (new)",
-            decision: "Add",
-            rationale: "Formal graph model for BAS object traversal, validation, and path diagnostics.",
-        },
-        DependencyDecision {
-            crate_name: "tracing / tracing-subscriber",
-            decision: "Keep + expand instrumentation",
-            rationale: "Essential for diagnosing export and overlay latency in production builds.",
-        },
-    ]
 }
