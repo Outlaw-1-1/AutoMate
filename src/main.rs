@@ -438,6 +438,72 @@ impl AutoMateApp {
             }
         });
     }
+
+    fn feature_control_center_view(&mut self, ui: &mut Ui) {
+        ui.heading("Feature Control Center");
+        ui.label("Everything critical in AutoMate is still here. Use this panel as the one-stop operational checklist.");
+        ui.add_space(8.0);
+
+        let (ready_count, ready_total) = self.export_readiness_score();
+        let overlay_ready = self.project.overlay_pdf.is_some();
+        let template_ready = !self.user_templates.is_empty();
+        let has_equipment = self
+            .project
+            .objects
+            .iter()
+            .any(|o| o.object_type == ObjectType::Equipment);
+
+        Self::card_frame().show(ui, |ui| {
+            ui.label(RichText::new("Core Capabilities").strong());
+            ui.separator();
+            ui.label(format!("{} Project settings + proposal inputs", if !self.project.name.trim().is_empty() { "✅" } else { "⚠" }));
+            ui.label(format!("{} Hours estimator", if has_equipment { "✅" } else { "⚠" }));
+            ui.label(format!("{} Drawings overlay", if overlay_ready { "✅" } else { "⚠" }));
+            ui.label(format!("{} Template engine", if template_ready { "✅" } else { "⚠" }));
+            ui.label(format!("{} Export readiness ({ready_count}/{ready_total})", if ready_count == ready_total { "✅" } else { "⚠" }));
+        });
+
+        ui.add_space(10.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Go to Project Settings").clicked() {
+                self.current_view = ToolView::ProjectSettings;
+            }
+            if ui.button("Go to Hours Estimator").clicked() {
+                self.current_view = ToolView::HoursEstimator;
+            }
+            if ui.button("Go to Drawings Overlay").clicked() {
+                self.current_view = ToolView::DrawingsOverlay;
+            }
+            if ui.button("Go to Templates").clicked() {
+                self.current_view = ToolView::Templates;
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Run Health Check").clicked() {
+                self.status = match self.project_health_summary() {
+                    Ok(summary) => summary,
+                    Err(err) => format!("Health check failed: {err:#}"),
+                };
+            }
+            if ui.button("Validate Export Readiness").clicked() {
+                self.status = match self.validate_export_readiness() {
+                    Ok(_) => "Export package ready".to_string(),
+                    Err(err) => err,
+                };
+            }
+            if ui.button("Export Proposal Markdown").clicked() {
+                self.export_proposal_markdown();
+            }
+            if ui.button("Export Objects CSV").clicked() {
+                self.export_objects_csv();
+            }
+            if ui.button("Export Project Schema").clicked() {
+                self.export_project_schema();
+            }
+        });
+    }
 }
 
 impl App for AutoMateApp {
